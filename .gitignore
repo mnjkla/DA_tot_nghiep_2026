@@ -41,3 +41,9 @@ vector_store/
 *.sqlite3
 postgres-data/
 n8n-data/
+
+# Version Tracker
+version-tracker.md
+version-tracker*.md
+.version-tracker
+
