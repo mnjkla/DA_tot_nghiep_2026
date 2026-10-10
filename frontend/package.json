@@ -1,0 +1,13 @@
+{
+  "name": "enterprise-erp-frontend",
+  "version": "1.0.0",
+  "description": "Frontend UI Dashboard cho Đồ Án Tốt Nghiệp Quản Trị Kinh Doanh & Sản Xuất Tích Hợp AI",
+  "scripts": {
+    "dev": "npx serve -l 3000 .",
+    "start": "npx serve -l 3000 ."
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "serve": "^14.2.0"
+  }
+}

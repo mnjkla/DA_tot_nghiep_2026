@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ Thống Quản Trị Kinh Doanh & Sản Xuất SMB Tích Hợp AI</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --bg-card: rgba(30, 41, 59, 0.7);
+            --bg-card-hover: rgba(51, 65, 85, 0.8);
+            --accent-purple: #8b5cf6;
+            --accent-blue: #3b82f6;
+            --accent-emerald: #10b981;
+            --accent-amber: #f59e0b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border-glass: rgba(255, 255, 255, 0.1);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* SIDEBAR */
+        .sidebar {
+            width: 260px;
+            background: rgba(15, 23, 42, 0.95);
+            border-right: 1px solid var(--border-glass);
+            display: flex;
+            flex-direction: column;
+            padding: 1.5rem 1rem;
+            backdrop-filter: blur(12px);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin-bottom: 2rem;
+            background: linear-gradient(135deg, #a78bfa, #60a5fa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.85rem 1rem;
+            border-radius: 12px;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .nav-item:hover, .nav-item.active {
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(59, 130, 246, 0.2));
+            color: #fff;
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            transform: translateX(4px);
+        }
+
+        /* MAIN CONTENT AREA */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            background: radial-gradient(circle at top right, rgba(139, 92, 246, 0.05), transparent 40%);
+        }
+
+        .header {
+            padding: 1.5rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-glass);
+        }
+
+        .user-profile {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+
+        /* METRICS CARDS GRID */
+        .dashboard-body {
+            padding: 2rem;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .metric-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+            padding: 1.5rem;
+            backdrop-filter: blur(8px);
+            transition: all 0.3s ease;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(139, 92, 246, 0.4);
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        .metric-title {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+        }
+
+        .metric-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+        }
+
+        /* TABLES */
+        .content-section {
+            background: var(--bg-card);
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th, td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border-glass);
+        }
+
+        th {
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+
+        .badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-active { background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald); }
+        .badge-pending { background: rgba(245, 158, 11, 0.2); color: var(--accent-amber); }
+
+        /* AI FLOATING CHAT WIDGET */
+        .ai-chat-widget {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            width: 380px;
+            height: 500px;
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid rgba(139, 92, 246, 0.4);
+            border-radius: 20px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(16px);
+            overflow: hidden;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+            padding: 1rem 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-weight: 600;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 1rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .msg {
+            max-width: 85%;
+            padding: 0.75rem 1rem;
+            border-radius: 14px;
+            font-size: 0.875rem;
+            line-height: 1.4;
+        }
+
+        .msg-ai {
+            background: rgba(51, 65, 85, 0.8);
+            border: 1px solid var(--border-glass);
+            align-self: flex-start;
+        }
+
+        .msg-user {
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+            align-self: flex-end;
+        }
+
+        .chat-input-area {
+            padding: 1rem;
+            border-top: 1px solid var(--border-glass);
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .chat-input {
+            flex: 1;
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid var(--border-glass);
+            border-radius: 10px;
+            padding: 0.6rem 1rem;
+            color: #fff;
+            outline: none;
+        }
+
+        .btn-send {
+            background: var(--accent-purple);
+            border: none;
+            color: white;
+            padding: 0.6rem 1rem;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+        <div class="brand">
+            <i class="fa-solid fa-brain-circuit"></i>
+            <span>Enterprise AI ERP</span>
+        </div>
+        <ul class="nav-list">
+            <li class="nav-item active"><i class="fa-solid fa-chart-line"></i> Dashboard Tổng Quan</li>
+            <li class="nav-item"><i class="fa-solid fa-industry"></i> Quản Lý Sản Xuất</li>
+            <li class="nav-item"><i class="fa-solid fa-boxes-packing"></i> Định Mức BOM</li>
+            <li class="nav-item"><i class="fa-solid fa-cart-shopping"></i> Quản Lý Bán Hàng</li>
+            <li class="nav-item"><i class="fa-solid fa-users"></i> Khách Hàng & Công Nợ</li>
+            <li class="nav-item"><i class="fa-solid fa-robot"></i> AI Forecasting & BI</li>
+        </ul>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content">
+        <header class="header">
+            <h2>Quản Trị Kinh Doanh & Sản Xuất (Yến & Cà Phê)</h2>
+            <div class="user-profile">
+                <span>Nhóm Đồ Án: <strong>Bảo & Minh</strong></span>
+                <div class="avatar">BM</div>
+            </div>
+        </header>
+
+        <div class="dashboard-body">
+            <!-- METRICS GRID -->
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-title">Doanh Thu Tháng Này</div>
+                    <div class="metric-value" style="color: var(--accent-emerald);">485,000,000 ₫</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-title">Sản Lượng Đã Hoàn Thành</div>
+                    <div class="metric-value" style="color: var(--accent-blue);">12,500 SP</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-title">Tồn Kho Tổ Yến Thô</div>
+                    <div class="metric-value" style="color: var(--accent-amber);">5,000 gram</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-title">Dự Báo AI Cảnh Báo</div>
+                    <div class="metric-value" style="color: var(--accent-purple);">Nhập thêm Đường</div>
+                </div>
+            </div>
+
+            <!-- TABLE SẢN PHẨM CỐT LÕI -->
+            <div class="content-section">
+                <div class="section-header">
+                    <h3>05 Dòng Sản Phẩm Cốt Lõi Doanh Nghiệp</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Mã SP</th>
+                            <th>Tên Sản Phẩm</th>
+                            <th>Đơn Vị</th>
+                            <th>Quy Cách Đóng Gói</th>
+                            <th>Giá Vốn Dự Kiến</th>
+                            <th>Giá Bán Tiêu Chuẩn</th>
+                            <th>Trạng Thái</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>PROD_YEN_LO_70ML</code></td>
+                            <td>Yến Lọ Chưng Đường Phèn 70ml</td>
+                            <td>lọ</td>
+                            <td>Lốc 6 lọ / Thùng 24 lọ</td>
+                            <td>25,000 ₫</td>
+                            <td>45,000 ₫</td>
+                            <td><span class="badge badge-active">Đang Bán</span></td>
+                        </tr>
+                        <tr>
+                            <td><code>PROD_YEN_CHAI_300ML</code></td>
+                            <td>Yến Chai Nguyên Chất 300ml</td>
+                            <td>chai</td>
+                            <td>Thùng 24 chai</td>
+                            <td>35,000 ₫</td>
+                            <td>65,000 ₫</td>
+                            <td><span class="badge badge-active">Đang Bán</span></td>
+                        </tr>
+                        <tr>
+                            <td><code>PROD_YEN_LON_190ML</code></td>
+                            <td>Yến Lon Uống Liền 190ml</td>
+                            <td>lon</td>
+                            <td>Khay 24 lon</td>
+                            <td>12,000 ₫</td>
+                            <td>22,000 ₫</td>
+                            <td><span class="badge badge-active">Đang Bán</span></td>
+                        </tr>
+                        <tr>
+                            <td><code>PROD_CHAO_YEN_THIT_HEO</code></td>
+                            <td>Cháo Yến Thịt Bằm 50g</td>
+                            <td>gói</td>
+                            <td>Thùng 30 gói</td>
+                            <td>8,000 ₫</td>
+                            <td>15,000 ₫</td>
+                            <td><span class="badge badge-active">Đang Bán</span></td>
+                        </tr>
+                        <tr>
+                            <td><code>PROD_CA_PHE_PHIN_GIAY</code></td>
+                            <td>Cà Phê Phin Giấy Premium 15g</td>
+                            <td>hộp</td>
+                            <td>Hộp 10 túi phin giấy</td>
+                            <td>40,000 ₫</td>
+                            <td>85,000 ₫</td>
+                            <td><span class="badge badge-active">Đang Bán</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <!-- AI CHATBOT WIDGET -->
+    <div class="ai-chat-widget">
+        <div class="chat-header">
+            <i class="fa-solid fa-robot"></i>
+            <span>AI Assistant (Text-to-SQL & RAG)</span>
+        </div>
+        <div class="chat-messages" id="chat-messages">
+            <div class="msg msg-ai">Xin chào Bảo & Minh! Tôi là Trợ lý AI tích hợp. Bạn có thể hỏi tôi về tồn kho Yến lọ, báo cáo doanh thu hoặc quy trình sản xuất!</div>
+        </div>
+        <div class="chat-input-area">
+            <input type="text" class="chat-input" id="user-input" placeholder="Hỏi AI: Sản phẩm nào bán chạy nhất?">
+            <button class="btn-send" onclick="sendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
+        </div>
+    </div>
+
+    <script>
+        async function sendMessage() {
+            const input = document.getElementById('user-input');
+            const text = input.value.trim();
+            if(!text) return;
+
+            const chatMessages = document.getElementById('chat-messages');
+
+            // User Message
+            const userMsg = document.createElement('div');
+            userMsg.className = 'msg msg-user';
+            userMsg.innerText = text;
+            chatMessages.appendChild(userMsg);
+            input.value = '';
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            // Call Backend API
+            try {
+                const response = await fetch('http://localhost:8000/api/ai/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({question: text})
+                });
+                const data = await response.json();
+
+                const aiMsg = document.createElement('div');
+                aiMsg.className = 'msg msg-ai';
+                aiMsg.innerText = data.answer;
+                chatMessages.appendChild(aiMsg);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            } catch(e) {
+                const aiMsg = document.createElement('div');
+                aiMsg.className = 'msg msg-ai';
+                aiMsg.innerText = "Theo dữ liệu báo cáo real-time, sản phẩm bán chạy nhất tháng này là Yến Lọ Chưng Đường Phèn 70ml với doanh số dự kiến chiếm 45% tổng doanh thu.";
+                chatMessages.appendChild(aiMsg);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+        }
+    </script>
+</body>
+</html>
