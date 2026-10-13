@@ -39,8 +39,10 @@ vector_store/
 # Database & Storage
 *.sqlite
 *.sqlite3
+*.db
 postgres-data/
 n8n-data/
+mattpocock-skills/
 
 # Version Tracker
 version-tracker.md
