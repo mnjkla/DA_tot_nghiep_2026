@@ -1,0 +1,6 @@
+﻿product_id,product_name,unit,packaging_spec,units_per_package,estimated_cost,base_selling_price,current_stock,min_stock_level,max_stock_level,lead_time_days,business_status
+SP01,Yến lọ,Lọ,Hộp 6 lọ x 70ml,6,21000,38000,46236,2000,25000,2,ACTIVE
+SP02,Yến chai,Chai,Lốc 6 chai x 150ml,6,26500,45000,43331,2000,25000,2,ACTIVE
+SP03,Yến lon,Lon,Thùng 24 lon x 250ml,24,10000,18000,113723,5000,50000,2,ACTIVE
+SP04,Cháo yến,Gói,Thùng 30 gói x 50g,30,9500,16000,42964,3000,35000,3,ACTIVE
+SP05,Cà phê phin giấy,Hộp,Hộp 10 phin x 15g,1,42000,75000,100049,1500,15000,3,ACTIVE

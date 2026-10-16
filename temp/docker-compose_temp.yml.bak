@@ -1,0 +1,30 @@
+version: '3.8'
+
+# =========================================================================
+# FILE: docker-compose_temp.yml
+# MÔ TẢ: Container thử nghiệm độc lập cho schema_temp.sql + seed_temp.sql
+# Dùng port 5433 và volume riêng => KHÔNG ảnh hưởng đến docker-compose.yml
+# =========================================================================
+# Cách chạy:   docker-compose -f docker-compose_temp.yml up -d
+# Cách dừng:   docker-compose -f docker-compose_temp.yml down
+# Xóa sạch:    docker-compose -f docker-compose_temp.yml down -v
+# =========================================================================
+
+services:
+  postgres_erp_temp:
+    image: postgres:15-alpine
+    container_name: erp_postgres_temp
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: erp_user
+      POSTGRES_PASSWORD: erp_password
+      POSTGRES_DB: enterprise_erp
+    ports:
+      - "5433:5432"       # Port 5433 để không xung đột với container cũ (5432)
+    volumes:
+      - pg_erp_temp_data:/var/lib/postgresql/data
+      - ./database/schema_temp.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./database/seed_temp.sql:/docker-entrypoint-initdb.d/02_seed.sql
+
+volumes:
+  pg_erp_temp_data:

@@ -1,0 +1,10 @@
+﻿material_id,material_name,unit,standard_unit_cost,current_stock,min_stock_level,max_stock_level,lead_time_days
+NVL01,Tổ yến tinh chế,Gram,25000,44190.27,5000,50000,7
+NVL02,Đường phèn kết tinh,Gram,35,384115.0,100000,1000000,3
+NVL03,Gạo thơm sấy thăng hoa,Gram,40,359625.0,50000,500000,4
+NVL04,Cà phê Arabica/Robusta rang xay,Gram,250,851500.0,50000,500000,5
+NVL05,Lọ thủy tinh 70ml (kèm nắp),Cái,2500,40770.0,5000,50000,5
+NVL06,Chai thủy tinh 150ml (kèm nắp),Cái,3200,42800.0,5000,50000,5
+NVL07,Lon nhôm 250ml (kèm nắp),Cái,1800,77085.0,10000,80000,5
+NVL08,Bao bì màng nhôm Cháo yến,Cái,800,75230.0,10000,80000,4
+NVL09,Túi lọc phin giấy & Hộp cà phê,Bộ,4500,39415.0,5000,40000,4
