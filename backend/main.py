@@ -407,6 +407,327 @@ def ai_chatbot(query: ChatQuery):
 
     return {"answer": reply, "question": query.question}
 
+# =============================================================================
+# 5. API CỔNG BÁN HÀNG SỈ/LẺ & CHATBOT BÁN HÀNG (STOREFRONT & AI SALES COMMERCE)
+# =============================================================================
+@app.get("/api/store/products")
+def get_store_products():
+    """
+    Lấy danh mục sản phẩm phục vụ Cổng Bán Hàng Storefront
+    Bao gồm giá lẻ, giá sỉ chiết khấu theo thùng/lốc, MOQ và tồn kho thực tế
+    """
+    with DBContext() as db:
+        sql = """
+            SELECT p.*, c.category_name,
+                   COALESCE((SELECT SUM(fg.quantity_in_stock) 
+                             FROM finished_goods_inventory fg 
+                             WHERE fg.product_id = p.product_id), 0) as total_stock
+            FROM products p
+            JOIN product_categories c ON p.category_id = c.category_id
+            WHERE p.status = 'ACTIVE'
+            ORDER BY p.product_id;
+        """
+        products = db.query(sql)
+
+    # Bổ sung thông tin chính sách giá sỉ (Wholesale) & Công dụng sức khỏe
+    wholesale_config = {
+        "PROD_YEN_LO_70ML": {
+            "wholesale_moq": 24, # 1 thùng 24 lọ
+            "wholesale_discount": 0.18, # giảm 18%
+            "case_spec": "Thùng 24 lọ",
+            "health_benefits": "Bổ phổi, tăng cường hệ miễn dịch, phục hồi sức khỏe người cao tuổi và người mới ốm dậy.",
+            "image": "https://images.unsplash.com/photo-1544816155-12df9643f363?auto=format&fit=crop&w=600&q=80"
+        },
+        "PROD_YEN_CHAI_300ML": {
+            "wholesale_moq": 12, # 1 thùng 12 chai
+            "wholesale_discount": 0.15,
+            "case_spec": "Thùng 12 chai",
+            "health_benefits": "Hàm lượng tổ yến cao nguyên chất, tiện lợi mang theo tập thể thao, bồi bổ trí não.",
+            "image": "https://images.unsplash.com/photo-1577937927133-66ef06acdf18?auto=format&fit=crop&w=600&q=80"
+        },
+        "PROD_YEN_LON_190ML": {
+            "wholesale_moq": 24, # 1 thùng 24 lon
+            "wholesale_discount": 0.20,
+            "case_spec": "Thùng 24 lon",
+            "health_benefits": "Giải khát thanh mát, bổ dưỡng, tiện lợi dùng hàng ngày cho cả gia đình.",
+            "image": "https://images.unsplash.com/photo-1581009146145-b5ef050c2e1e?auto=format&fit=crop&w=600&q=80"
+        },
+        "PROD_CHAO_YEN_THIT_HEO": {
+            "wholesale_moq": 30, # 1 thùng 30 gói
+            "wholesale_discount": 0.20,
+            "case_spec": "Thùng 30 gói",
+            "health_benefits": "Dinh dưỡng trọn vẹn cho bữa sáng hoặc người ốm, dễ tiêu hóa, thơm ngon bổ dưỡng.",
+            "image": "https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=600&q=80"
+        },
+        "PROD_CA_PHE_PHIN_GIAY": {
+            "wholesale_moq": 20, # 1 thùng 20 hộp
+            "wholesale_discount": 0.22,
+            "case_spec": "Thùng 20 hộp",
+            "health_benefits": "Cà phê Robusta & Arabica chọn lọc, hương vị đậm đà, tỉnh táo làm việc tức thì.",
+            "image": "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=600&q=80"
+        }
+    }
+
+    result = []
+    for p in products:
+        code = p["product_code"]
+        config = wholesale_config.get(code, {
+            "wholesale_moq": 10,
+            "wholesale_discount": 0.15,
+            "case_spec": "Thùng tiêu chuẩn",
+            "health_benefits": "Sản phẩm chất lượng cao của doanh nghiệp.",
+            "image": "https://images.unsplash.com/photo-1544816155-12df9643f363?auto=format&fit=crop&w=600&q=80"
+        })
+        retail_price = float(p["selling_price"])
+        wholesale_price = round(retail_price * (1.0 - config["wholesale_discount"]), -3)
+
+        result.append({
+            **p,
+            "retail_price": retail_price,
+            "wholesale_price": wholesale_price,
+            "wholesale_moq": config["wholesale_moq"],
+            "case_spec": config["case_spec"],
+            "health_benefits": config["health_benefits"],
+            "image": config["image"],
+            "in_stock": int(p["total_stock"])
+        })
+
+    return {"data": result, "total": len(result)}
+
+
+class StoreOrderItem(BaseModel):
+    product_id: int
+    quantity: int
+    unit_price: float
+    is_wholesale: Optional[bool] = False
+
+class StoreCheckoutRequest(BaseModel):
+    customer_name: str
+    phone: str
+    address: str
+    customer_type: Optional[str] = "RETAIL"  # RETAIL hoặc AGENT
+    agent_code: Optional[str] = None
+    payment_method: str = "VIETQR"  # VIETQR, COD, DEBT
+    items: List[StoreOrderItem]
+    notes: Optional[str] = "Đơn đặt từ Cổng Bán Hàng Storefront"
+
+@app.post("/api/store/checkout")
+def store_checkout(order: StoreCheckoutRequest):
+    """
+    Xử lý đặt hàng từ Cổng Bán Hàng:
+    1. Tự động liên kết hoặc tạo mới khách hàng trong bảng customers
+    2. Ghi nhận đơn hàng vào sales_orders (status = NEW)
+    3. Ghi nhận chi tiết sản phẩm vào sales_order_details
+    4. Sinh mã thanh toán VietQR tự động
+    5. Cập nhật ngay tức thì lên Dashboard Quản trị ERP
+    """
+    if not order.items:
+        raise HTTPException(status_code=400, detail="Giỏ hàng trống, vui lòng chọn sản phẩm")
+
+    import random
+    order_code = f"SO-STORE-{random.randint(1000, 9999)}"
+    total_amount = sum(item.quantity * item.unit_price for item in order.items)
+
+    with DBContext() as db:
+        # 1. Tìm hoặc tạo khách hàng
+        customer_id = None
+        if order.agent_code:
+            existing = db.query("SELECT * FROM customers WHERE customer_code = %s", (order.agent_code,))
+            if existing:
+                customer_id = existing[0]["customer_id"]
+        
+        if not customer_id:
+            existing = db.query("SELECT * FROM customers WHERE phone = %s", (order.phone,))
+            if existing:
+                customer_id = existing[0]["customer_id"]
+            else:
+                cust_code = f"CUST-{random.randint(1000, 9999)}"
+                customer_id = db.execute("""
+                    INSERT INTO customers (customer_code, customer_name, customer_type, phone, address, credit_limit, current_debt)
+                    VALUES (%s, %s, %s, %s, %s, 0, 0);
+                """, (cust_code, order.customer_name, order.customer_type, order.phone, order.address))
+
+        # 2. Xử lý ghi nợ công nợ nếu là khách sỉ/đại lý chọn DEBT
+        if order.payment_method == "DEBT":
+            db.execute("UPDATE customers SET current_debt = current_debt + %s WHERE customer_id = %s", (total_amount, customer_id))
+
+        # 3. Tạo Đơn Bán Hàng trong sales_orders
+        channel_tag = "[STOREFRONT_WHOLESALE]" if order.customer_type == "AGENT" else "[STOREFRONT_RETAIL]"
+        full_notes = f"{channel_tag} {order.notes} | Đ/c: {order.address} | TT: {order.payment_method}"
+        
+        so_id = db.execute("""
+            INSERT INTO sales_orders (order_code, customer_id, total_amount, final_amount, status, notes)
+            VALUES (%s, %s, %s, %s, 'NEW', %s);
+        """, (order_code, customer_id, total_amount, total_amount, full_notes))
+
+        # 4. Ghi chi tiết đơn hàng
+        for item in order.items:
+            subtotal = item.quantity * item.unit_price
+            db.execute("""
+                INSERT INTO sales_order_details (sales_order_id, product_id, quantity, unit_price, subtotal)
+                VALUES (%s, %s, %s, %s, %s);
+            """, (so_id, item.product_id, item.quantity, item.unit_price, subtotal))
+
+        # 5. Ghi nhận phương thức thanh toán
+        payment_code = f"PAY-{order_code}"
+        db.execute("""
+            INSERT INTO payments (payment_code, sales_order_id, customer_id, amount_paid, payment_method, notes)
+            VALUES (%s, %s, %s, %s, %s, %s);
+        """, (payment_code, so_id, customer_id, total_amount, order.payment_method, f"Thanh toán cho đơn {order_code}"))
+
+    # 6. Sinh thông tin VietQR Napas tự động
+    bank_account = "0988776655"
+    bank_code = "MB"
+    account_name = "DOANH NGHIEP YEN SAO CA PHE SMB"
+    vietqr_url = f"https://img.vietqr.io/image/{bank_code}-{bank_account}-compact2.png?amount={int(total_amount)}&addInfo={order_code}&accountName={account_name.replace(' ', '%20')}"
+
+    return {
+        "success": True,
+        "message": "Đặt hàng thành công! Đơn hàng đã được chuyển đến hệ thống Quản trị ERP.",
+        "order_code": order_code,
+        "sales_order_id": so_id,
+        "total_amount": total_amount,
+        "payment_method": order.payment_method,
+        "vietqr_url": vietqr_url,
+        "bank_info": {
+            "bank_name": "MBBank (Ngân hàng Quân Đội)",
+            "account_number": bank_account,
+            "account_name": account_name,
+            "amount": total_amount,
+            "content": order_code
+        }
+    }
+
+
+class SalesChatQuery(BaseModel):
+    message: str
+    customer_type: Optional[str] = "RETAIL"
+
+@app.post("/api/store/ai-sales-chat")
+def ai_sales_chat(query: SalesChatQuery):
+    """
+    Trợ lý AI Bán Hàng Thông Minh (Conversational Commerce):
+    - Tư vấn công dụng sức khỏe, quà biếu, đối tượng sử dụng
+    - Báo giá sỉ lẻ, chính sách chiết khấu đại lý B2B
+    - Nhận diện ý định mua hàng & sinh nút 'Thêm vào giỏ hàng ngay'
+    - Tra cứu tiến độ đơn hàng thời gian thực qua mã SO-xxx
+    """
+    msg = query.message.strip().lower()
+    suggested_products = []
+    reply = ""
+
+    with DBContext() as db:
+        # 1. Tra cứu mã đơn hàng (Order Tracking)
+        import re
+        so_match = re.search(r"so-[\w-]+", msg, re.IGNORECASE)
+        if so_match or "tra cứu đơn" in msg or "kiểm tra đơn" in msg:
+            order_code = so_match.group(0).upper() if so_match else ""
+            if order_code:
+                orders = db.query("""
+                    SELECT so.*, c.customer_name 
+                    FROM sales_orders so 
+                    JOIN customers c ON so.customer_id = c.customer_id 
+                    WHERE UPPER(so.order_code) = %s
+                """, (order_code,))
+                if orders:
+                    o = orders[0]
+                    status_text = "Đơn mới tiếp nhận (Đang chuẩn bị đóng gói tại kho)" if o["status"] == "NEW" else "Đã xuất kho và đang vận chuyển giao hàng"
+                    reply = f"📦 **Thông tin tra cứu đơn hàng {o['order_code']}:**\n- Khách hàng: **{o['customer_name']}**\n- Trạng thái: **{status_text}**\n- Tổng tiền: **{float(o['final_amount']):,.0f} ₫**\n- Ghi chú: {o.get('notes', 'Không có')}."
+                else:
+                    reply = f"🔍 Không tìm thấy đơn hàng có mã **{order_code}**. Vui lòng kiểm tra lại mã đơn (ví dụ: SO-STORE-1234)."
+            else:
+                reply = "📦 Bạn vui lòng nhập chính xác mã đơn hàng (ví dụ: `SO-STORE-1234`) để tôi kiểm tra trạng thái vận chuyển cho bạn ngay nhé!"
+
+        # 2. Tư vấn người tiểu đường / ăn kiêng
+        elif "tiểu đường" in msg or "ăn kiêng" in msg or "ít đường" in msg or "không đường" in msg:
+            reply = "🌿 **Tư vấn sức khỏe:** Đối với người có lượng đường huyết cao hoặc ăn kiêng, chúng tôi khuyên dùng:\n1. **Yến Lon Uống Liền 190ml**: Thanh mát, ít calo, bổ sung khoáng chất tự nhiên.\n2. **Yến Chưng Không Đường (hoặc chưng hạt sen)**: Giữ nguyên 100% sợi yến tươi nguyên chất, bồi bổ thể lực mà không lo tăng chỉ số đường huyết."
+            # Gợi ý thẻ sản phẩm
+            prod = db.query("SELECT * FROM products WHERE product_code = 'SP_YEN_LON_190ML'")
+            if prod:
+                suggested_products.append({
+                    "product_id": prod[0]["product_id"],
+                    "product_name": prod[0]["product_name"],
+                    "price": float(prod[0]["selling_price"]),
+                    "unit": prod[0]["unit"],
+                    "quantity": 6,
+                    "action": "add_to_cart"
+                })
+
+        # 3. Tư vấn người già, ốm, quà biếu
+        elif "người già" in msg or "người lớn tuổi" in msg or "ốm" in msg or "bệnh" in msg or "bồi bổ" in msg or "quà biếu" in msg:
+            reply = "🎁 **Gợi ý quà biếu & Bồi dưỡng sức khỏe:**\n- **Yến Lọ Chưng Đường Phèn 70ml (Hàm lượng 18% tổ yến tươi)**: Tăng sức đề kháng, bổ phổi, kích thích cảm giác ăn ngon ngủ sâu.\n- **Cháo Yến Thịt Bằm 50g**: Dinh dưỡng dễ tiêu hóa, cung cấp năng lượng tức thì cho người mệt mỏi."
+            prod1 = db.query("SELECT * FROM products WHERE product_code = 'SP_YEN_LO_70ML'")
+            prod2 = db.query("SELECT * FROM products WHERE product_code = 'SP_CHAO_YEN_50G'")
+            if prod1:
+                suggested_products.append({
+                    "product_id": prod1[0]["product_id"],
+                    "product_name": prod1[0]["product_name"],
+                    "price": float(prod1[0]["selling_price"]),
+                    "unit": prod1[0]["unit"],
+                    "quantity": 6,
+                    "action": "add_to_cart"
+                })
+            if prod2:
+                suggested_products.append({
+                    "product_id": prod2[0]["product_id"],
+                    "product_name": prod2[0]["product_name"],
+                    "price": float(prod2[0]["selling_price"]),
+                    "unit": prod2[0]["unit"],
+                    "quantity": 10,
+                    "action": "add_to_cart"
+                })
+
+        # 4. Tư vấn giá sỉ / đại lý B2B
+        elif "giá sỉ" in msg or "đại lý" in msg or "mua sỉ" in msg or "thùng" in msg or "chiết khấu" in msg:
+            reply = "💼 **Chính sách Khách Sỉ & Đại Lý Doanh Nghiệp (B2B):**\n- **Chiết khấu cao từ 15% đến 22%** khi đặt hàng theo Thùng/Lốc tiêu chuẩn (MOQ từ 1 thùng trở lên).\n- Hỗ trợ công nợ gối đầu 30 ngày cho Đại lý chính thức có hợp đồng.\n- Giao hàng tận nơi miễn phí vận chuyển toàn quốc cho đơn sỉ từ 2 thùng trở lên.\n👉 Bạn có thể chuyển sang chế độ **'Khách mua sỉ B2B'** trên thanh điều hướng để xem trực tiếp giá sỉ từng sản phẩm!"
+
+        # 5. Nhận diện ý định mua hàng cụ thể (VD: "cho tôi 2 lọ yến", "mua cà phê", "lấy 1 thùng yến lon")
+        elif "yến lọ" in msg or "yến chưng" in msg:
+            prod = db.query("SELECT * FROM products WHERE product_code = 'SP_YEN_LO_70ML'")
+            if prod:
+                reply = f"✨ **{prod[0]['product_name']}** luôn là sản phẩm bán chạy nhất! Bạn có muốn tôi thêm vào giỏ hàng giúp bạn không?"
+                suggested_products.append({
+                    "product_id": prod[0]["product_id"],
+                    "product_name": prod[0]["product_name"],
+                    "price": float(prod[0]["selling_price"]),
+                    "unit": prod[0]["unit"],
+                    "quantity": 2,
+                    "action": "add_to_cart"
+                })
+        elif "cà phê" in msg or "cafe" in msg:
+            prod = db.query("SELECT * FROM products WHERE product_code = 'SP_CA_PHE_PHIN_GIAY'")
+            if prod:
+                reply = f"☕ **{prod[0]['product_name']}** sử dụng công nghệ phin giấy lọc Nhật Bản, tiện lợi và thơm ngon chuẩn vị mộc. Tôi đã chuẩn bị sẵn thẻ thêm giỏ hàng bên dưới:"
+                suggested_products.append({
+                    "product_id": prod[0]["product_id"],
+                    "product_name": prod[0]["product_name"],
+                    "price": float(prod[0]["selling_price"]),
+                    "unit": prod[0]["unit"],
+                    "quantity": 2,
+                    "action": "add_to_cart"
+                })
+        elif "yến chai" in msg:
+            prod = db.query("SELECT * FROM products WHERE product_code = 'SP_YEN_CHAI_300ML'")
+            if prod:
+                reply = f"🌟 **{prod[0]['product_name']}** dung tích lớn 300ml đậm đặc. Tôi đã chuẩn bị nút thêm vào giỏ hàng bên dưới:"
+                suggested_products.append({
+                    "product_id": prod[0]["product_id"],
+                    "product_name": prod[0]["product_name"],
+                    "price": float(prod[0]["selling_price"]),
+                    "unit": prod[0]["unit"],
+                    "quantity": 1,
+                    "action": "add_to_cart"
+                })
+        else:
+            reply = "👋 Xin chào! Tôi là Trợ lý Bán Hàng AI của doanh nghiệp Yến & Cà Phê. Tôi có thể giúp bạn:\n1. 🔍 **Tư vấn sản phẩm** phù hợp cho sức khỏe hoặc làm quà biếu.\n2. 💼 **Giải đáp chính sách mua sỉ** theo Thùng/Lốc cho đại lý.\n3. 🛒 **Tạo giỏ hàng & đặt mua nhanh** ngay trong khung chat.\n4. 🚚 **Tra cứu tình trạng vận chuyển** theo mã đơn `SO-xxx`.\nBạn cần tôi hỗ trợ thông tin gì hôm nay?"
+
+    return {
+        "reply": reply,
+        "suggested_products": suggested_products,
+        "customer_type": query.customer_type
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+
