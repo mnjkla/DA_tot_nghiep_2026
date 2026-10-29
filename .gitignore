@@ -35,6 +35,13 @@ vector_store/
 .env.local
 .env.production
 *.pem
+*.ai_config.json
+.ai_config.json
+
+# Binaries & Tools
+tools/
+*.exe
+datatesst/
 
 # Database & Storage
 *.sqlite

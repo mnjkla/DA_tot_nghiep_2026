@@ -8,17 +8,27 @@ import {
   Warehouse,
   Users,
   Sparkles,
+  Store,
+  Megaphone,
 } from 'lucide-react'
 
-export default function Sidebar() {
-  const navItems = [
-    { to: '/', label: 'Tổng quan', icon: LayoutDashboard },
-    { to: '/production', label: 'Sản xuất', icon: Factory },
-    { to: '/bom', label: 'Định mức BOM', icon: Layers },
-    { to: '/sales', label: 'Bán hàng', icon: ShoppingCart },
-    { to: '/inventory', label: 'Kho hàng', icon: Warehouse },
-    { to: '/customers', label: 'Khách hàng', icon: Users },
+export default function Sidebar({ currentUser }) {
+  const allNavItems = [
+    { to: '/', label: 'Tổng quan BI', icon: LayoutDashboard, roles: ['ADMIN'] },
+    { to: '/production', label: 'Sản xuất', icon: Factory, roles: ['ADMIN', 'PRODUCTION_STAFF', 'WAREHOUSE_MANAGER'] },
+    { to: '/bom', label: 'Định mức BOM', icon: Layers, roles: ['ADMIN', 'PRODUCTION_STAFF', 'PROCUREMENT'] },
+    { to: '/sales', label: 'Bán hàng & Đơn', icon: ShoppingCart, roles: ['ADMIN', 'WAREHOUSE_MANAGER'] },
+    { to: '/inventory', label: 'Kho hàng & Thu mua', icon: Warehouse, roles: ['ADMIN', 'WAREHOUSE_MANAGER', 'PROCUREMENT'] },
+    { to: '/customers', label: 'Khách hàng', icon: Users, roles: ['ADMIN'] },
+    { to: '/campaigns', label: 'Chiến Dịch & CMS', icon: Megaphone, roles: ['ADMIN'], badge: 'CMS' },
+    { to: '/store', label: 'Cổng Bán Hàng', icon: Store, badge: 'Sỉ & Lẻ' },
   ]
+
+  const navItems = allNavItems.filter((item) => {
+    if (!item.roles) return true // ai cũng xem được (như Cổng Bán Hàng)
+    if (!currentUser) return false
+    return item.roles.includes(currentUser.role) || currentUser.role === 'ADMIN'
+  })
 
   return (
     <aside className="sidebar">
@@ -44,14 +54,29 @@ export default function Sidebar() {
             >
               <Icon size={18} />
               <span>{item.label}</span>
+              {item.badge && (
+                <span
+                  style={{
+                    marginLeft: 'auto',
+                    fontSize: '0.68rem',
+                    fontWeight: 700,
+                    background: 'rgba(16, 185, 129, 0.2)',
+                    color: '#10b981',
+                    padding: '2px 6px',
+                    borderRadius: 10,
+                  }}
+                >
+                  {item.badge}
+                </span>
+              )}
             </NavLink>
           )
         })}
       </nav>
 
       <div className="sidebar-footer">
-        <div>Hệ thống Quản trị & AI v1.2.0</div>
-        <div style={{ color: '#10b981', marginTop: 4 }}>● Hệ thống sẵn sàng</div>
+        <div>Hệ thống Quản trị & AI v1.4.0</div>
+        <div style={{ color: '#10b981', marginTop: 4 }}>● Bảo mật RBAC Đa Cấp</div>
       </div>
     </aside>
   )

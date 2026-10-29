@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react'
-import { Layers, Info } from 'lucide-react'
+import { Info } from 'lucide-react'
 import { api } from '../services/api'
+import SortableHeader, { useTableSort, sortArrayByField } from '../components/SortableHeader'
 
 export default function BOM() {
   const [products, setProducts] = useState([])
   const [selectedProductId, setSelectedProductId] = useState(null)
   const [bomItems, setBomItems] = useState([])
   const [loading, setLoading] = useState(true)
+  const { sortConfig: bomSort, handleSort: handleBomSort } = useTableSort('bom_id', 'asc')
 
   useEffect(() => {
     api.getProducts().then((res) => {
@@ -21,7 +23,8 @@ export default function BOM() {
   useEffect(() => {
     if (selectedProductId) {
       setLoading(true)
-      api.getBOM(selectedProductId)
+      api
+        .getBOM(selectedProductId)
         .then((res) => setBomItems(res.bom || []))
         .catch((err) => console.error(err))
         .finally(() => setLoading(false))
@@ -64,7 +67,9 @@ export default function BOM() {
             <Info size={20} color="#10b981" />
             <div style={{ fontSize: '0.85rem' }}>
               <span style={{ fontWeight: 600, color: '#10b981' }}>{currentProduct.product_name}</span>
-              <span style={{ color: '#cbd5e1' }}> — Giá bán tiêu chuẩn: {Number(currentProduct.selling_price).toLocaleString('vi-VN')} ₫ / {currentProduct.unit}. Quy cách: {currentProduct.packaging_spec || 'Theo đơn vị'}.</span>
+              <span style={{ color: '#cbd5e1' }}>
+                {' '}— Giá bán tiêu chuẩn: {Number(currentProduct.selling_price).toLocaleString('vi-VN')} ₫ / {currentProduct.unit}. Quy cách: {currentProduct.packaging_spec || 'Theo đơn vị'}.
+              </span>
             </div>
           </div>
         )}
@@ -78,11 +83,11 @@ export default function BOM() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Mã NVL</th>
-                <th>Tên nguyên vật liệu</th>
-                <th>Số lượng định mức / 1 thành phẩm</th>
-                <th>Đơn vị tính</th>
-                <th>Ghi chú công thức</th>
+                <SortableHeader label="Mã NVL" field="material_code" sortConfig={bomSort} onSort={handleBomSort} />
+                <SortableHeader label="Tên nguyên vật liệu" field="material_name" sortConfig={bomSort} onSort={handleBomSort} />
+                <SortableHeader label="Số lượng định mức / 1 thành phẩm" field="quantity_required" sortConfig={bomSort} onSort={handleBomSort} />
+                <SortableHeader label="Đơn vị tính" field="material_unit" sortConfig={bomSort} onSort={handleBomSort} />
+                <SortableHeader label="Ghi chú công thức" field="notes" sortConfig={bomSort} onSort={handleBomSort} />
               </tr>
             </thead>
             <tbody>
@@ -99,7 +104,7 @@ export default function BOM() {
                   </td>
                 </tr>
               ) : (
-                bomItems.map((b) => (
+                sortArrayByField(bomItems, bomSort).map((b) => (
                   <tr key={b.bom_id}>
                     <td style={{ fontWeight: 600, color: '#38bdf8' }}>{b.material_code}</td>
                     <td style={{ fontWeight: 500 }}>{b.material_name}</td>

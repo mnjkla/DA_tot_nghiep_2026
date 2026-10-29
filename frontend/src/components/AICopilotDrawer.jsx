@@ -14,7 +14,8 @@ export default function AICopilotDrawer() {
   const [loading, setLoading] = useState(false)
 
   const quickPrompts = [
-    'Tồn kho thành phẩm còn bao nhiêu?',
+    'trong kho có gì?',
+    'còn tồn những gì?',
     'Kiểm tra tồn kho nguyên vật liệu',
     'Xem sản phẩm bán chạy nhất tháng',
     'Định mức BOM Yến chưng đường phèn',
@@ -31,7 +32,15 @@ export default function AICopilotDrawer() {
 
     try {
       const res = await api.askAIChat(query)
-      setMessages((prev) => [...prev, { sender: 'bot', text: res.answer }])
+      setMessages((prev) => [
+        ...prev,
+        {
+          sender: 'bot',
+          text: res.answer,
+          sources: res.sources || [],
+          model_used: res.model_used || 'Semantic RAG Engine',
+        },
+      ])
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -83,13 +92,37 @@ export default function AICopilotDrawer() {
             <div className="ai-drawer-messages">
               {messages.map((m, idx) => (
                 <div key={idx} className={`ai-msg ${m.sender}`}>
-                  {m.text}
+                  <div style={{ whiteSpace: 'pre-line', lineHeight: 1.5 }}>{m.text}</div>
+                  {m.sender === 'bot' && (m.sources?.length > 0 || m.model_used) && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        paddingTop: 6,
+                        borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+                        fontSize: '0.68rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        flexWrap: 'wrap',
+                        gap: 6,
+                      }}
+                    >
+                      <span style={{ color: '#34d399', fontWeight: 600 }}>
+                        ⚡ {m.model_used || 'Semantic RAG'}
+                      </span>
+                      {m.sources && m.sources.length > 0 && (
+                        <span style={{ color: '#94a3b8' }}>
+                          Nguồn: <code style={{ color: '#38bdf8' }}>{m.sources.join(', ')}</code>
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
               {loading && (
                 <div className="ai-msg bot" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Loader2 size={16} className="animate-spin" />
-                  <span>Đang truy vấn CSDL & phân tích...</span>
+                  <span>Đang truy vấn CSDL & suy luận AI...</span>
                 </div>
               )}
             </div>

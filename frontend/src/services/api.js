@@ -2,9 +2,13 @@ const BASE_URL = ''
 
 async function request(endpoint, options = {}) {
   const url = `${BASE_URL}${endpoint}`
+  const token = localStorage.getItem('erp_auth_token')
+  const authHeader = token ? { Authorization: `Bearer ${token}` } : {}
+
   const config = {
     headers: {
       'Content-Type': 'application/json',
+      ...authHeader,
       ...options.headers,
     },
     ...options,
@@ -22,18 +26,59 @@ async function request(endpoint, options = {}) {
 }
 
 export const api = {
-  // 1. Dashboard Stats
-  getDashboardStats: () => request('/api/dashboard/stats'),
+  // 0. Auth & RBAC Module
+  login: (username, password) =>
+    request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+  getMe: (token) => request(`/api/auth/me?token=${token}`),
+  getUsers: () => request('/api/auth/users'),
 
-  // 2. Production Module
+  // 1. Dashboard & AI 1-Year Profit Forecast
+  getDashboardStats: () => request('/api/dashboard/stats'),
+  getProfitForecast: () => request('/api/bi/profit-forecast'),
+  executeAIStrategy: (phaseCode) =>
+    request('/api/bi/execute-strategy', {
+      method: 'POST',
+      body: JSON.stringify({ phase_code: phaseCode }),
+    }),
+
+  // 2. Production, Catalog CRUD & 2-Step Warehouse Requisition Module
   getProducts: () => request('/api/products'),
+  createProduct: (data) =>
+    request('/api/products', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateProduct: (productId, data) =>
+    request(`/api/products/${productId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   getBOM: (productId) => request(`/api/bom/${productId}`),
   getMaterials: () => request('/api/materials'),
+  getMaterialReceipts: () => request('/api/materials/receipts'),
+  importMaterialStock: (data) =>
+    request('/api/materials/import', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   getProductionOrders: () => request('/api/production-orders'),
   createProductionOrder: (data) =>
     request('/api/production-orders', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  requestMaterialsForPO: (orderId) =>
+    request(`/api/production-orders/${orderId}/request-materials`, {
+      method: 'POST',
+    }),
+  getMaterialRequisitions: () => request('/api/material-requisitions'),
+  approveMaterialRequisition: (reqId, approvedBy = 'kho (Nguyễn Văn Kho - Trưởng Kho)') =>
+    request(`/api/material-requisitions/${reqId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ approved_by: approvedBy }),
     }),
   startProductionOrder: (orderId) =>
     request(`/api/production-orders/${orderId}/start`, {
@@ -58,10 +103,130 @@ export const api = {
       method: 'POST',
     }),
 
-  // 4. AI Copilot Integration
+  // 4. AI Copilot Integration & Gemini RAG Config (Version 1.8.0)
   askAIChat: (question) =>
     request('/api/ai/chat', {
       method: 'POST',
       body: JSON.stringify({ question }),
     }),
+  getAIConfig: () => request('/api/system/ai-config'),
+  updateAIConfig: (apiKey, model = 'gemini-1.5-flash') =>
+    request('/api/system/ai-config', {
+      method: 'POST',
+      body: JSON.stringify({ api_key: apiKey, model }),
+    }),
+
+  // 5. Storefront B2B/B2C Commerce & Geo-Personalization Module
+  getStoreProducts: (region = 'ALL') =>
+    request(region && region !== 'ALL' ? `/api/store/products?region=${region}` : '/api/store/products'),
+  getStoreProductDetail: (productId, region = 'ALL') =>
+    request(`/api/store/products/${productId}/detail?region=${encodeURIComponent(region || 'ALL')}`),
+  createProductReview: (productId, reviewData) =>
+    request(`/api/store/products/${productId}/reviews`, {
+      method: 'POST',
+      body: JSON.stringify(reviewData),
+    }),
+  saveCustomerProfile: (profileData) =>
+    request('/api/store/customer-profile', {
+      method: 'POST',
+      body: JSON.stringify(profileData),
+    }),
+  verifyAgent: (agentCode) =>
+    request('/api/store/verify-agent', {
+      method: 'POST',
+      body: JSON.stringify({ agent_code: agentCode }),
+    }),
+  calculatePricing: (items, agentCode = null) =>
+    request('/api/store/calculate-pricing', {
+      method: 'POST',
+      body: JSON.stringify({ items, agent_code: agentCode }),
+    }),
+  storeCheckout: (orderData) =>
+    request('/api/store/checkout', {
+      method: 'POST',
+      body: JSON.stringify(orderData),
+    }),
+  askStoreAIChat: (message, customerType = 'RETAIL') =>
+    request('/api/store/ai-sales-chat', {
+      method: 'POST',
+      body: JSON.stringify({ message, customer_type: customerType }),
+    }),
+  askStoreSalesChat: (message, customerType = 'RETAIL') =>
+    request('/api/store/ai-sales-chat', {
+      method: 'POST',
+      body: JSON.stringify({ message, customer_type: customerType }),
+    }),
+
+  // 6. Admin CMS & Marketing Campaigns (Flash Sale & Video Showcase)
+  getCampaigns: (region = 'ALL', activeOnly = false) =>
+    request(`/api/campaigns?region=${region}&active_only=${activeOnly}`),
+  createCampaign: (data) =>
+    request('/api/campaigns', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  toggleCampaign: (campaignId) =>
+    request(`/api/campaigns/${campaignId}/toggle`, {
+      method: 'PUT',
+    }),
+  deleteCampaign: (campaignId) =>
+    request(`/api/campaigns/${campaignId}`, {
+      method: 'DELETE',
+    }),
+
+  // 7. Version 1.5.0: n8n Automation, Tax Excel/CSV Export-Import & Cloud Image Manager
+  getN8nStatus: () => request('/api/n8n/status'),
+  triggerN8nWorkflow: (workflowId, action = 'MANUAL_SYNC') =>
+    request('/api/n8n/trigger', {
+      method: 'POST',
+      body: JSON.stringify({ workflow_id: workflowId, action }),
+    }),
+  getN8nWorkflowDownloadUrl: (workflowId) =>
+    `${BASE_URL}/api/n8n/workflows/${workflowId}/download`,
+
+  getTaxReportSummary: (period = 'ALL', vatRate = 8) =>
+    request(`/api/reports/tax-summary?period=${period}&vat_rate=${vatRate}`),
+  getTaxExportUrl: (
+    period = 'ALL',
+    vatRate = 8,
+    format = 'xlsx',
+    sheet = '01_Bang_Ke_Thue_Dau_Ra'
+  ) =>
+    `${BASE_URL}/api/reports/tax-export?period=${period}&vat_rate=${vatRate}&format=${format}&sheet=${sheet}`,
+  getImportTemplateUrl: (target = 'MATERIALS', format = 'xlsx') =>
+    `${BASE_URL}/api/data/import-template?target=${target}&format=${format}`,
+  importTabularFile: (data) =>
+    request('/api/data/import-file', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getCloudImages: () => request('/api/cloud-images'),
+  uploadCloudImage: (data) =>
+    request('/api/cloud-images/upload', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  // 8. Version 1.6.0: Real-Time Notification Bell, Customer Debt Settlement & Web Load Benchmark
+  getNotifications: () => request('/api/notifications'),
+  markNotificationsRead: (notificationId = null, markAll = true) =>
+    request('/api/notifications/mark-read', {
+      method: 'POST',
+      body: JSON.stringify({ notification_id: notificationId, mark_all: markAll }),
+    }),
+  settleCustomerDebt: (customerId, data) =>
+    request(`/api/customers/${customerId}/settle-debt`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  runLoadBenchmark: (concurrentUsers = 20, totalRequests = 100) =>
+    request('/api/system/load-test', {
+      method: 'POST',
+      body: JSON.stringify({
+        concurrent_users: concurrentUsers,
+        total_requests: totalRequests,
+      }),
+    }),
 }
+

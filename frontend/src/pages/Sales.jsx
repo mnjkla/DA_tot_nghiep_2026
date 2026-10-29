@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { Plus, Send, CheckCircle2, ShoppingBag } from 'lucide-react'
+import { Plus, Send, CheckCircle2, ShoppingBag, Download } from 'lucide-react'
 import { api } from '../services/api'
+import SortableHeader, { useTableSort, sortArrayByField } from '../components/SortableHeader'
 
 export default function Sales({ addToast }) {
   const [orders, setOrders] = useState([])
@@ -8,6 +9,7 @@ export default function Sales({ addToast }) {
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
+  const { sortConfig: orderSort, handleSort: handleOrderSort } = useTableSort('sales_order_id', 'desc')
 
   // Form state
   const [customerId, setCustomerId] = useState('')
@@ -93,14 +95,33 @@ export default function Sales({ addToast }) {
           </p>
         </div>
 
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => setShowModal(true)}
-        >
-          <Plus size={18} />
-          <span>Lập đơn bán hàng mới</span>
-        </button>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <a
+            href={api.getTaxExportUrl('ALL', 8, 'xlsx', '01_Bang_Ke_Thue_Dau_Ra')}
+            download
+            className="btn btn-outline"
+            style={{
+              textDecoration: 'none',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              borderColor: 'rgba(16, 185, 129, 0.45)',
+              color: '#34d399',
+            }}
+          >
+            <Download size={16} />
+            <span>Xuất Bảng Kê Thuế & Hóa Đơn (.XLSX)</span>
+          </a>
+
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setShowModal(true)}
+          >
+            <Plus size={18} />
+            <span>Lập đơn bán hàng mới</span>
+          </button>
+        </div>
       </div>
 
       <div className="card">
@@ -108,60 +129,119 @@ export default function Sales({ addToast }) {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Mã đơn</th>
-                <th>Khách hàng</th>
-                <th>Phân loại</th>
-                <th>Tổng thanh toán</th>
-                <th>Trạng thái</th>
-                <th>Ghi chú</th>
+                <SortableHeader label="Mã đơn" field="order_code" sortConfig={orderSort} onSort={handleOrderSort} />
+                <SortableHeader label="Kênh & Nguồn" field="channel_type" sortConfig={orderSort} onSort={handleOrderSort} />
+                <SortableHeader label="Khách hàng" field="customer_name" sortConfig={orderSort} onSort={handleOrderSort} />
+                <SortableHeader label="Tổng thanh toán" field="final_amount" sortConfig={orderSort} onSort={handleOrderSort} />
+                <SortableHeader label="Thanh toán" field="payment_method" sortConfig={orderSort} onSort={handleOrderSort} />
+                <SortableHeader label="Trạng thái kho" field="status" sortConfig={orderSort} onSort={handleOrderSort} />
+                <SortableHeader label="Ghi chú" field="notes" sortConfig={orderSort} onSort={handleOrderSort} />
                 <th>Hành động</th>
               </tr>
             </thead>
             <tbody>
               {orders.length === 0 ? (
                 <tr>
-                  <td colSpan="7" style={{ textAlign: 'center', color: '#94a3b8', padding: '32px 0' }}>
+                  <td colSpan="8" style={{ textAlign: 'center', color: '#94a3b8', padding: '32px 0' }}>
                     {loading ? 'Đang tải dữ liệu...' : 'Chưa có đơn hàng nào.'}
                   </td>
                 </tr>
               ) : (
-                orders.map((o) => (
-                  <tr key={o.sales_order_id}>
-                    <td style={{ fontWeight: 600, color: '#38bdf8' }}>{o.order_code}</td>
-                    <td style={{ fontWeight: 500 }}>{o.customer_name}</td>
-                    <td>
-                      <span className="badge" style={{ background: 'rgba(255,255,255,0.06)' }}>
-                        {o.customer_type}
-                      </span>
-                    </td>
-                    <td style={{ fontWeight: 700, color: '#10b981' }}>
-                      {Number(o.final_amount).toLocaleString('vi-VN')} ₫
-                    </td>
-                    <td>
-                      <span className={`badge badge-${o.status === 'NEW' ? 'pending' : 'completed'}`}>
-                        {o.status === 'NEW' ? 'Đơn mới (Chưa xuất)' : 'Đã xuất kho & giao'}
-                      </span>
-                    </td>
-                    <td style={{ color: '#94a3b8', fontSize: '0.82rem' }}>{o.notes || '—'}</td>
-                    <td>
-                      {o.status === 'NEW' ? (
-                        <button
-                          type="button"
-                          className="btn btn-primary btn-action"
-                          onClick={() => handleDispatchOrder(o.sales_order_id)}
-                          title="Lập phiếu xuất kho và trừ số lượng theo lô tồn kho"
+                sortArrayByField(orders, orderSort).map((o) => {
+                  const isStorefront = (o.order_code && o.order_code.startsWith('SO-STORE-')) || (o.channel_type === 'STOREFRONT')
+                  const isWholesaleB2B = (o.notes && o.notes.includes('[STOREFRONT_WHOLESALE_B2B]')) || o.customer_type === 'AGENT'
+                  const isWholesaleMoq = o.notes && o.notes.includes('[STOREFRONT_WHOLESALE_MOQ]')
+
+                  return (
+                    <tr key={o.sales_order_id}>
+                      <td style={{ fontWeight: 600, color: '#38bdf8' }}>{o.order_code}</td>
+                      <td>
+                        {isStorefront ? (
+                          <span
+                            className="badge"
+                            style={{
+                              background: isWholesaleB2B
+                                ? 'rgba(56, 189, 248, 0.15)'
+                                : isWholesaleMoq
+                                ? 'rgba(16, 185, 129, 0.15)'
+                                : 'rgba(168, 85, 247, 0.15)',
+                              color: isWholesaleB2B ? '#38bdf8' : isWholesaleMoq ? '#10b981' : '#c084fc',
+                              fontWeight: 700,
+                            }}
+                          >
+                            {isWholesaleB2B
+                              ? '🌐 Cổng B2B Đại Lý'
+                              : isWholesaleMoq
+                              ? '🌐 Cổng Sỉ Thùng'
+                              : '🌐 Cổng Bán Lẻ'}
+                          </span>
+                        ) : (
+                          <span className="badge" style={{ background: 'rgba(255,255,255,0.06)', color: '#94a3b8' }}>
+                            🏢 Trực Tiếp ERP
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ fontWeight: 500 }}>
+                        <div>{o.customer_name}</div>
+                        <div style={{ fontSize: '0.75rem', color: '#64748b' }}>{o.phone}</div>
+                      </td>
+                      <td style={{ fontWeight: 700, color: '#10b981' }}>
+                        {Number(o.final_amount).toLocaleString('vi-VN')} ₫
+                      </td>
+                      <td>
+                        <span
+                          className="badge"
+                          style={{
+                            background:
+                              o.payment_method === 'VIETQR'
+                                ? 'rgba(16, 185, 129, 0.15)'
+                                : o.payment_method === 'DEBT'
+                                ? 'rgba(56, 189, 248, 0.15)'
+                                : 'rgba(245, 158, 11, 0.15)',
+                            color:
+                              o.payment_method === 'VIETQR'
+                                ? '#10b981'
+                                : o.payment_method === 'DEBT'
+                                ? '#38bdf8'
+                                : '#f59e0b',
+                            fontSize: '0.75rem',
+                          }}
                         >
-                          <Send size={14} />
-                          <span>Xuất kho (Trừ lô)</span>
-                        </button>
-                      ) : (
-                        <span style={{ color: '#64748b', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <CheckCircle2 size={14} color="#10b981" /> Đã hoàn thành
+                          {o.payment_method === 'VIETQR'
+                            ? 'VietQR Napas'
+                            : o.payment_method === 'DEBT'
+                            ? 'Công nợ B2B'
+                            : o.payment_method || 'COD'}
                         </span>
-                      )}
-                    </td>
-                  </tr>
-                ))
+                      </td>
+                      <td>
+                        <span className={`badge badge-${o.status === 'NEW' ? 'pending' : 'completed'}`}>
+                          {o.status === 'NEW' ? 'Đơn mới (Chưa xuất)' : 'Đã xuất kho & giao'}
+                        </span>
+                      </td>
+                      <td style={{ color: '#94a3b8', fontSize: '0.8rem', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={o.notes}>
+                        {o.notes || '—'}
+                      </td>
+                      <td>
+                        {o.status === 'NEW' ? (
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-action"
+                            onClick={() => handleDispatchOrder(o.sales_order_id)}
+                            title="Lập phiếu xuất kho và trừ số lượng theo lô tồn kho chuẩn 2 bước"
+                          >
+                            <Send size={14} />
+                            <span>Xuất kho (Trừ lô)</span>
+                          </button>
+                        ) : (
+                          <span style={{ color: '#64748b', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <CheckCircle2 size={14} color="#10b981" /> Đã hoàn thành
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })
               )}
             </tbody>
           </table>

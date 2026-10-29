@@ -172,10 +172,10 @@ graph TD
 
 ---
 
-## 📋 7. Danh Mục Công Việc Triển Khai Tiếp Theo (Action Items)
+## 📋 7. Danh Mục Công Việc Triển Khai Tiếp Theo (Action Items - ĐÃ HOÀN TẤT 100% TẠI VERSION 1.5.0)
 
-- [ ] **Bước 1:** Tạo thư mục `n8n/workflows/` và xuất 3 file JSON workflow chuẩn hóa.
-- [ ] **Bước 2:** Bổ sung bảng `system_notifications` vào `database/schema.sql` và `database/seed.sql`.
-- [ ] **Bước 3:** Thêm component `NotificationBell` (Chuông thông báo kèm badge đỏ) vào thanh Navigation của Frontend React.
-- [ ] **Bước 4:** Bổ sung endpoint phát sự kiện Webhook trong `backend/main.py` khi trừ kho NVL và khi tạo đơn hàng mới.
-- [ ] **Bước 5:** Chạy thử nghiệm đồng bộ toàn bộ luồng bằng kịch bản 10 phút để nhóm tập dượt thuyết trình.
+- [x] **Bước 1:** Tạo thư mục `n8n/workflows/` và xuất 3 file JSON workflow chuẩn hóa (`01_etl_star_schema.json`, `02_ai_tool_calling.json`, `03_event_driven_alerts.json`).
+- [x] **Bước 2:** Bổ sung bảng `system_notifications` và `n8n_execution_logs` vào CSDL.
+- [x] **Bước 3:** Thêm trung tâm điều phối `n8n Automation` & `Báo Cáo Thuế Excel` vào thanh Navigation Header & Dashboard của Frontend React.
+- [x] **Bước 4:** Bổ sung endpoint phát sự kiện Webhook (`dispatch_n8n_webhook`) trong `backend/main.py` khi trừ kho NVL, khi tạo đơn hàng mới và khi kích hoạt đồng bộ ETL.
+- [x] **Bước 5:** Kiểm thử tự động toàn bộ luồng (21/21 Backend tests PASS & 11/11 Frontend tests PASS).

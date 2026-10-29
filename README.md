@@ -47,24 +47,43 @@ $$\text{Nguyên vật liệu} \longrightarrow \text{Sản xuất (BOM/Lệnh)} \
 
 ---
 
-## 🚀 4. Hướng dẫn Khởi chạy Nhanh (Getting Started)
+## 🚀 4. Hướng dẫn Khởi chạy Nhanh Cho Thành Viên Nhóm (1-Click Quickstart)
 
-### Bước 1: Clone dự án về máy
-```bash
-git clone <URL_REPOSITORY_CUA_BAN>
-cd "Đồ Án tốt nghiệp"
+### Cách 1: Chạy Tự Động Bằng File `.bat` (Khuyên Dùng Cho Đồng Đội Test)
+Chỉ cần kéo code từ Git về và **nhấp đúp chuột vào file `start-project.bat`** (hoặc chạy trong cmd / PowerShell):
+
+```bat
+start-project.bat
 ```
 
-### Bước 2: Khởi chạy Database & n8n qua Docker Compose
+File `.bat` sẽ tự động thực hiện từ A-Z:
+1. ✅ **Kiểm tra môi trường:** Python 3.10+ và Node.js/npm.
+2. 📦 **Tự động cài đặt thư viện:** `pip install` và `npm install` nếu máy chưa có.
+3. 🗄️ **Tự động nạp CSDL mẫu:** Tự sinh `database/enterprise_erp.db` (19 bảng chuẩn + 5 sản phẩm cốt lõi + tài khoản mẫu + chính sách giá + BOM). Không bắt buộc cài PostgreSQL!
+4. 🏗️ **Tự động build Frontend SPA:** Tạo sẵn `frontend/dist` sẵn sàng phục vụ single-port.
+5. 🧪 **Chạy kiểm thử tự động:** Chạy 28 Unit Tests Backend xác nhận 100% hệ thống sẵn sàng.
+6. 🌐 **Tự động mở trình duyệt:** Mở `http://localhost:8000/store` (Cửa hàng) và `http://localhost:8000/login` (ERP).
+
+#### Tài Khoản Test Mẫu:
+| Vai trò | Tên đăng nhập | Mật khẩu | Quyền hạn |
+| :--- | :--- | :--- | :--- |
+| **Giám Đốc / Admin** | `admin` | `admin123` | Toàn quyền quản trị, cấu hình AI, BI, duyệt tài chính |
+| **Trưởng Kho** | `kho` | `kho123` | Quản lý tồn kho NVL & Thành phẩm, duyệt phiếu lĩnh |
+| **Quản Đốc Sản Xuất** | `sx` | `sx123` | Lập kế hoạch, tạo lệnh sản xuất, đề xuất vật tư |
+| **Nhân Viên Thu Mua** | `thumua` | `thumua123` | Nhập NVL biến động giá từ nhà cung cấp |
+
+---
+
+### Cách 2: Khởi chạy Nâng cao với Docker & PostgreSQL (Môi trường Production)
 ```bash
+# 1. Khởi chạy Database PostgreSQL & n8n
 docker compose up -d
-```
 
-### Bước 3: Khởi tạo Cơ sở Dữ liệu
-```bash
-# Nạp Schema & Seed data vào PostgreSQL
-docker exec -i enterprise_db psql -U postgres -d enterprise_erp < database/schema.sql
-docker exec -i enterprise_db psql -U postgres -d enterprise_erp < database/seed.sql
+# 2. Khởi chạy Backend API
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 3. Khởi chạy Frontend Dev Server
+cd frontend && npm run dev
 ```
 
 ---

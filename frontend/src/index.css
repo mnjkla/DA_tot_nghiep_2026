@@ -424,14 +424,15 @@ body {
   box-shadow: 0 6px 16px rgba(16, 185, 129, 0.4);
 }
 
-.btn-secondary {
+.btn-secondary, .btn-outline {
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-main);
   border: 1px solid var(--border-subtle);
 }
 
-.btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.1);
+.btn-secondary:hover, .btn-outline:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .btn-action {
@@ -591,11 +592,11 @@ body {
 }
 
 /* Modal Form Styles */
-.modal-overlay {
+.modal-overlay, .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(5px);
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -603,7 +604,7 @@ body {
   padding: 20px;
 }
 
-.modal-content {
+.modal-content, .modal-box {
   background: #1e293b;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--radius-lg);
@@ -612,6 +613,10 @@ body {
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
   overflow: hidden;
   animation: modalScale 0.2s ease-out;
+}
+
+.modal-box {
+  padding: 24px;
 }
 
 @keyframes modalScale {
@@ -646,19 +651,37 @@ body {
   color: var(--text-muted);
 }
 
-.form-input, .form-select, .form-textarea {
+.form-input, .form-select, .form-textarea, .input-control {
   background: #0f172a;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--radius-sm);
-  padding: 10px 14px;
-  color: #fff;
-  font-size: 0.88rem;
+  padding: 11px 14px;
+  color: #f8fafc;
+  font-family: inherit;
+  font-size: 0.9rem;
   outline: none;
   width: 100%;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
-.form-input:focus, .form-select:focus, .form-textarea:focus {
+.form-input::placeholder, .form-textarea::placeholder, .input-control::placeholder {
+  color: #64748b;
+}
+
+.form-input:focus, .form-select:focus, .form-textarea:focus, .input-control:focus {
   border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.18);
+}
+
+/* Chống nền trắng mặc định của Chrome/Edge Autofill trên giao diện Dark Mode */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #0f172a inset !important;
+  -webkit-text-fill-color: #f8fafc !important;
+  caret-color: #f8fafc !important;
+  transition: background-color 5000s ease-in-out 0s;
 }
 
 /* Toast Container */

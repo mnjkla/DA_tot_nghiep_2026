@@ -1,0 +1,70 @@
+{
+  "name": "03 - Event-Driven System Alerts & Notification Dispatcher",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "system-alert",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "node-webhook-alert",
+      "name": "Webhook: /webhook/system-alert",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [220, 300],
+      "webhookId": "erp-system-alert-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $input.first().json.body || $input.first().json || {};\nconst eventType = payload.event_type || 'SYSTEM_EVENT';\nlet severity = payload.severity || 'INFO';\nif (eventType === 'LOW_MATERIAL_STOCK' || Number(payload.total_amount || 0) >= 20000000) {\n  severity = 'CRITICAL';\n} else if (eventType === 'NEW_SALES_ORDER' || eventType === 'REQUISITION_APPROVED') {\n  severity = 'WARNING';\n}\nreturn [{\n  json: {\n    title: payload.title || `[n8n Auto] ${eventType}`,\n    message: payload.message || 'Sự kiện nghiệp vụ được xử lý tự động bởi n8n Workflow.',\n    severity,\n    event_type: eventType,\n    processed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-classify-severity",
+      "name": "Code: Evaluate Alert Severity",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.system_notifications (title, message, severity, is_read, created_at) VALUES ('{{ $json.title }}', '{{ $json.message }}', '{{ $json.severity }}', FALSE, CURRENT_TIMESTAMP) RETURNING *;"
+      },
+      "id": "node-insert-notification",
+      "name": "Postgres: Save System Notification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [820, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: /webhook/system-alert": {
+      "main": [
+        [
+          {
+            "node": "Code: Evaluate Alert Severity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Evaluate Alert Severity": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Save System Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "v1.5.0-wf3"
+}
+

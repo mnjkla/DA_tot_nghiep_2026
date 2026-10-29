@@ -1,0 +1,167 @@
+{
+  "name": "02 - AI Agent Tool Calling Middleware",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-tool",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook-ai-tool",
+      "name": "Webhook: /webhook/ai-tool",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [220, 300],
+      "webhookId": "erp-ai-tool-webhook"
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.body.action || 'QUERY_INVENTORY' }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "QUERY_INVENTORY",
+              "output": 0
+            },
+            {
+              "value2": "REVENUE_ANALYTICS",
+              "output": 1
+            },
+            {
+              "value2": "BOM_LOOKUP",
+              "output": 2
+            }
+          ]
+        }
+      },
+      "id": "node-switch-intent",
+      "name": "Switch: Route AI Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT material_id, material_name, unit, stock_quantity, unit_cost FROM public.materials ORDER BY stock_quantity ASC;"
+      },
+      "id": "node-sql-inventory",
+      "name": "Postgres: Check Material Stock",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [760, 140]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT COUNT(*) AS total_orders, COALESCE(SUM(total_amount), 0) AS total_revenue, COALESCE(SUM(total_amount - paid_amount), 0) AS total_debt FROM public.sales_orders;"
+      },
+      "id": "node-sql-revenue",
+      "name": "Postgres: Revenue & Debt Summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [760, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT p.product_name, m.material_name, b.quantity_per_unit, m.unit FROM public.bill_of_materials b JOIN public.products p ON b.product_id = p.product_id JOIN public.materials m ON b.material_id = m.material_id;"
+      },
+      "id": "node-sql-bom",
+      "name": "Postgres: Lookup Product BOM",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [760, 460]
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "id": "node-respond-ai",
+      "name": "Respond to AI Copilot",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1060, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: /webhook/ai-tool": {
+      "main": [
+        [
+          {
+            "node": "Switch: Route AI Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch: Route AI Intent": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Check Material Stock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Postgres: Revenue & Debt Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Postgres: Lookup Product BOM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Check Material Stock": {
+      "main": [
+        [
+          {
+            "node": "Respond to AI Copilot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Revenue & Debt Summary": {
+      "main": [
+        [
+          {
+            "node": "Respond to AI Copilot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Lookup Product BOM": {
+      "main": [
+        [
+          {
+            "node": "Respond to AI Copilot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "v1.5.0-wf2"
+}
+

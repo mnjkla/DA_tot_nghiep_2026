@@ -1,0 +1,120 @@
+{
+  "name": "01 - Visual ETL Pipeline (OLTP to Star Schema DW)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 * * *"
+            }
+          ]
+        }
+      },
+      "id": "node-cron-etl",
+      "name": "Schedule Trigger (00:00 Daily)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 220]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trigger-etl",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "node-webhook-etl",
+      "name": "Webhook: /webhook/trigger-etl",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [220, 420],
+      "webhookId": "erp-trigger-etl-webhook"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT so.sales_order_id, so.order_date, so.customer_id, so.total_amount, so.paid_amount, so.payment_status, sod.product_id, sod.quantity, sod.line_total, sod.discount, p.estimated_cost FROM public.sales_orders so JOIN public.sales_order_details sod ON so.sales_order_id = sod.sales_order_id JOIN public.products p ON sod.product_id = p.product_id;"
+      },
+      "id": "node-pg-extract",
+      "name": "Postgres: Extract OLTP Sales & Inventory",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [520, 320]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transform OLTP records: Seasonality tagging, Line Ratio Debt Allocation & Gross Profit\nconst items = $input.all();\nreturn items.map(item => {\n  const row = item.json;\n  const orderDate = new Date(row.order_date || Date.now());\n  const month = orderDate.getMonth() + 1;\n  const seasonType = [1, 2, 12].includes(month) ? 'TET_SEASON' : 'NORMAL';\n  const standardCogs = Number(row.quantity || 0) * Number(row.estimated_cost || 0);\n  const revenue = Number(row.line_total || 0);\n  const grossProfit = revenue - standardCogs;\n  const totalAmount = Number(row.total_amount || 0);\n  const orderDebt = totalAmount - Number(row.paid_amount || 0);\n  const lineRatio = totalAmount > 0 ? revenue / totalAmount : 0;\n  const outstandingAmount = Math.round(orderDebt * lineRatio * 100) / 100;\n  return {\n    json: {\n      ...row,\n      season_type: seasonType,\n      standard_cogs: standardCogs,\n      gross_profit: grossProfit,\n      outstanding_amount: outstandingAmount,\n      synced_at: new Date().toISOString()\n    }\n  };\n});"
+      },
+      "id": "node-code-transform",
+      "name": "Code: Transform Seasonality & Debt Ratio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 320]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE SCHEMA IF NOT EXISTS dw; SELECT COUNT(*) AS synced_rows FROM public.sales_orders;"
+      },
+      "id": "node-pg-load-dw",
+      "name": "Postgres: Upsert Star Schema 'dw'",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1080, 320]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (00:00 Daily)": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Extract OLTP Sales & Inventory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: /webhook/trigger-etl": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Extract OLTP Sales & Inventory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres: Extract OLTP Sales & Inventory": {
+      "main": [
+        [
+          {
+            "node": "Code: Transform Seasonality & Debt Ratio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Transform Seasonality & Debt Ratio": {
+      "main": [
+        [
+          {
+            "node": "Postgres: Upsert Star Schema 'dw'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "v1.5.0-wf1"
+}
+
