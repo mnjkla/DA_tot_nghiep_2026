@@ -56,38 +56,56 @@ if not exist "frontend\node_modules" (
 )
 echo.
 
-:: 4. KHOI TAO CO SO DU LIEU MAU
-echo [4/5] Dang kiem tra Co so du lieu SQLite (database/enterprise_erp.db)...
+:: 4. KHOI TAO CO SO DU LIEU (DOCKER POSTGRES HOAC SQLITE)
+echo [4/5] Dang kiem tra Co so du lieu CSDL...
+where docker >nul 2>nul
+if %errorlevel% equ 0 (
+    echo   * Tim thay Docker! Dang kiem tra container PostgreSQL va n8n...
+    docker info >nul 2>nul
+    if %errorlevel% equ 0 (
+        docker compose up -d >nul 2>nul
+        python database\sync_sequences.py >nul 2>nul
+        echo   * Docker PostgreSQL (Port 5434) va n8n (Port 5678): DANG HOAT DONG!
+    ) else (
+        echo   * Docker Desktop chua bat, he thong se su dung CSDL SQLite Fallback.
+    )
+) else (
+    echo   * Docker chua duoc cai dat, he thong se su dung CSDL SQLite Fallback.
+)
+
 python backend/setup_database.py
 if %errorlevel% neq 0 (
     color 0C
-    echo [LOI] Khong the khoi tao CSDL!
+    echo [LOI] Khong the khoi tao CSDL SQLite fallback!
     pause
     exit /b 1
 )
 echo.
 
-:: 5. KIEM TRA BUILD FRONTEND SPA
-if not exist "frontend\dist\index.html" (
-    echo   * Dang build frontend SPA sang thu muc frontend/dist...
-    pushd frontend
-    call npm run build
-    popd
-) else (
-    echo   * Ban build frontend/dist: SAN SANG!
+:: 5. KIEM TRA VA BUILD FRONTEND SPA
+echo [5/5] Dang kiem tra va build ban moi nhat cua Frontend SPA...
+pushd frontend
+call npm run build
+popd
+if %errorlevel% neq 0 (
+    color 0C
+    echo [LOI] Khong the build Frontend SPA!
+    pause
+    exit /b 1
 )
+echo   * Ban build frontend/dist: SAN SANG!
 echo.
 
 :: 6. CHAY TEST SUITE BACKEND KIEM TRA TINH TOAN VEN
 echo ===============================================================================
-echo                 DANG CHAY BO TEST KIEM THU TU DONG (28 TESTS)
+echo                 DANG CHAY BO TEST KIEM THU TU DONG (30 TESTS)
 echo ===============================================================================
 python backend/test_backend.py
 if %errorlevel% neq 0 (
     color 0E
     echo [CANH BAO] Mot so test co the chua vuot qua. Vui long kiem tra log tren.
 ) else (
-    echo [XAC NHAN] 28/28 Unit Tests Backend vuot qua 100%!
+    echo [XAC NHAN] 30/30 Unit Tests Backend vuot qua 100%!
 )
 echo.
 
@@ -107,7 +125,7 @@ echo ===========================================================================
 echo                             LUA CHON CHE DO CHAY
 echo ===============================================================================
 echo  [1] Chay Unified Server (Port 8000: Full-stack ERP + Storefront + AI Copilot) [KHUYEN DUNG]
-echo  [2] Chay Development Mode (Port 5173 Vite React + Port 8000 Backend)
+echo  [2] Chay Development Mode (Port 3000 Vite React + Port 8000 Backend)
 echo  [3] Chay toan bo Test Suite (Backend 28 Tests + Frontend 14 Tests)
 echo  [4] Reset CSDL mau ve ban dau (Lam moi toan bo du lieu)
 echo  [5] Thoat
@@ -153,11 +171,11 @@ echo ===========================================================================
 echo  DANG KHOI CHAY CHE DO PHAT TRIEN (DEV MODE)
 echo ===============================================================================
 echo  Backend API:  http://localhost:8000
-echo  Frontend Dev: http://localhost:5173
+echo  Frontend Dev: http://localhost:3000
 echo ===============================================================================
 start "ERP Backend API (Port 8000)" cmd /k "chcp 65001 >nul && python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload"
-start "Frontend Dev Server (Port 5173)" cmd /k "chcp 65001 >nul && pushd frontend && npm run dev && popd"
-start "" "http://localhost:5173"
+start "Frontend Dev Server (Port 3000)" cmd /k "chcp 65001 >nul && pushd frontend && npm run dev && popd"
+start "" "http://localhost:3000"
 goto END
 
 :RUN_FULL_TESTS

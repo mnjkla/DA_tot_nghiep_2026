@@ -689,7 +689,7 @@ export default function AutomationAndTaxCenterModal({
                 </div>
               </div>
             </div>
-          ) : activeTab === 'N8N_AUTOMATION' ? (
+          ) : (activeTab === 'N8N_ENGINE' || activeTab === 'N8N_AUTOMATION') ? (
             /* TAB 2: TRUNG TÂM ĐIỀU PHỐI N8N AUTOMATION */
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
               <div

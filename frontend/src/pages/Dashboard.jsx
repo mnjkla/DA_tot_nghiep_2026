@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   DollarSign,
   Package,
@@ -12,6 +13,13 @@ import {
   Workflow,
   FileSpreadsheet,
   Download,
+  Search,
+  Filter,
+  RotateCcw,
+  AlertTriangle,
+  ShieldAlert,
+  ArrowUpRight,
+  TrendingDown,
 } from 'lucide-react'
 import {
   AreaChart,
@@ -25,8 +33,6 @@ import {
   Pie,
   Cell,
   Legend,
-  BarChart,
-  Bar,
 } from 'recharts'
 import { api } from '../services/api'
 import AutomationAndTaxCenterModal from '../components/AutomationAndTaxCenterModal'
@@ -99,7 +105,7 @@ export default function Dashboard({ addToast }) {
     finished_goods_count: 1250,
     raw_bird_nest_stock: 4500,
     active_production_orders: 2,
-    database_engine: 'SQLITE',
+    database_engine: 'POSTGRESQL',
   })
   const [forecastData, setForecastData] = useState(DEFAULT_FORECAST_12M)
   const [strategicPhases, setStrategicPhases] = useState(DEFAULT_PHASES)
@@ -112,6 +118,17 @@ export default function Dashboard({ addToast }) {
   const [centerModalOpen, setCenterModalOpen] = useState(false)
   const [centerModalTab, setCenterModalTab] = useState('TAX_EXCEL')
   const [syncingEtl, setSyncingEtl] = useState(false)
+
+  // GD_06: Bộ lọc Ngày/Tháng cho doanh thu & chỉ số
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+
+  // GD_07: Bảng Theo dõi Lợi nhuận & Công nợ Khách Hàng
+  const [customerFinancials, setCustomerFinancials] = useState([])
+  const [customerFinSearch, setCustomerFinSearch] = useState('')
+
+  // GD_09: Bảng AI Dự Báo Nhu Cầu & Tồn Kho 30 Ngày
+  const [stockDemandForecast, setStockDemandForecast] = useState([])
 
   const handleSyncN8nEtl = async () => {
     try {
@@ -128,9 +145,9 @@ export default function Dashboard({ addToast }) {
     }
   }
 
-  const fetchDashboardData = () => {
+  const fetchDashboardData = (filterStart = startDate, filterEnd = endDate) => {
     api
-      .getDashboardStats()
+      .getDashboardStats(filterStart, filterEnd)
       .then((data) => setStats(data))
       .catch((err) => console.error('Error fetching dashboard stats:', err))
 
@@ -144,11 +161,39 @@ export default function Dashboard({ addToast }) {
         })
         .catch(() => {})
     }
+
+    // GD_07: Lợi nhuận & Công nợ khách hàng
+    if (api.getCustomerFinancials) {
+      api
+        .getCustomerFinancials()
+        .then((res) => setCustomerFinancials(res.data || []))
+        .catch(() => {})
+    }
+
+    // GD_09: Dự báo nhu cầu 30 ngày & cảnh báo tồn kho
+    if (api.getStockDemandForecast) {
+      api
+        .getStockDemandForecast()
+        .then((res) => setStockDemandForecast(res.data || []))
+        .catch(() => {})
+    }
   }
 
   useEffect(() => {
     fetchDashboardData()
   }, [])
+
+  const handleApplyDateFilter = (e) => {
+    e.preventDefault()
+    fetchDashboardData(startDate, endDate)
+    addToast && addToast(`Đã lọc dữ liệu từ ${startDate || 'đầu kỳ'} đến ${endDate || 'hiện tại'}`, 'info')
+  }
+
+  const handleResetDateFilter = () => {
+    setStartDate('')
+    setEndDate('')
+    fetchDashboardData('', '')
+  }
 
   const handleExecuteStrategy = async (phaseCode) => {
     setExecutingPhase(phaseCode)
@@ -172,6 +217,16 @@ export default function Dashboard({ addToast }) {
     { name: 'Cháo yến thịt bằm', value: 12, color: '#a855f7' },
     { name: 'Cà phê phin giấy', value: 8, color: '#ec4899' },
   ]
+
+  // Lọc bảng GD_07
+  const filteredCustomerFin = customerFinancials.filter((c) => {
+    const q = customerFinSearch.toLowerCase().trim()
+    if (!q) return true
+    return (
+      (c.customer_name && c.customer_name.toLowerCase().includes(q)) ||
+      (c.customer_code && c.customer_code.toLowerCase().includes(q))
+    )
+  })
 
   return (
     <div>
@@ -235,6 +290,74 @@ export default function Dashboard({ addToast }) {
         </div>
       </div>
 
+      {/* GD_06: BỘ LỌC THỜI GIAN NGÀY / THÁNG TOÀN DIỆN CHO DOANH THU & CHỈ SỐ */}
+      <div
+        className="card"
+        style={{
+          marginBottom: 20,
+          padding: '12px 18px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 12,
+          border: '1px solid rgba(56, 189, 248, 0.25)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Filter size={18} color="#38bdf8" />
+          <div>
+            <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#f8fafc' }}>
+              Bộ Lọc Khoảng Thời Gian Doanh Thu & Chỉ Số (GD_06)
+            </div>
+            <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+              Lọc số liệu theo ngày bắt đầu - ngày kết thúc để phân tích doanh số và hiệu suất
+            </div>
+          </div>
+        </div>
+
+        <form onSubmit={handleApplyDateFilter} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.82rem' }}>
+            <span style={{ color: '#cbd5e1' }}>Từ ngày:</span>
+            <input
+              type="date"
+              className="form-input"
+              style={{ width: 140, padding: '4px 8px', fontSize: '0.8rem' }}
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+            />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.82rem' }}>
+            <span style={{ color: '#cbd5e1' }}>Đến ngày:</span>
+            <input
+              type="date"
+              className="form-input"
+              style={{ width: 140, padding: '4px 8px', fontSize: '0.8rem' }}
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+            />
+          </div>
+
+          <button type="submit" className="btn btn-primary btn-action" style={{ padding: '6px 14px', fontSize: '0.8rem' }}>
+            <Filter size={13} />
+            <span>Lọc Dữ Liệu</span>
+          </button>
+
+          {(startDate || endDate) && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-action"
+              style={{ padding: '6px 12px', fontSize: '0.8rem' }}
+              onClick={handleResetDateFilter}
+            >
+              <RotateCcw size={13} />
+              <span>Đặt Lại</span>
+            </button>
+          )}
+        </form>
+      </div>
+
       {/* KPI Cards Grid */}
       <div className="stats-grid">
         <div className="card stat-card">
@@ -242,7 +365,9 @@ export default function Dashboard({ addToast }) {
             <DollarSign size={24} />
           </div>
           <div>
-            <div className="stat-label">Doanh thu tháng hiện tại (VND)</div>
+            <div className="stat-label">
+              Doanh thu {startDate || endDate ? 'trong kỳ lọc' : 'tháng hiện tại'} (VND)
+            </div>
             <div className="stat-value">
               {Number(stats.monthly_revenue).toLocaleString('vi-VN')} ₫
             </div>
@@ -283,6 +408,218 @@ export default function Dashboard({ addToast }) {
               {stats.active_production_orders} lệnh
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* GD_09: BẢNG AI PHÂN TÍCH DỰ BÁO NHU CẦU & CẢNH BÁO TỒN KHO 30 NGÀY */}
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+          <div>
+            <h3 style={{ fontSize: '1.08rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Sparkles size={18} color="#10b981" />
+              <span>AI Phân Tích Dự Báo Nhu Cầu Tiêu Thụ & Cảnh Báo Tồn Kho 30 Ngày (GD_09, QLK_11)</span>
+            </h3>
+            <p style={{ fontSize: '0.8rem', color: '#94a3b8', marginTop: 2 }}>
+              Dự báo nhu cầu 30 ngày tới đối chiếu với tồn kho thực tế; đánh dấu màu Đỏ/Vàng/Xanh nổi bật giúp Giám Đốc và Thủ Kho nắm bắt kịp thời.
+            </p>
+          </div>
+          <Link to="/production" className="btn btn-outline" style={{ fontSize: '0.78rem', borderColor: '#10b981', color: '#34d399' }}>
+            <span>Chuyển Sang Kế Hoạch PO</span>
+            <ArrowUpRight size={14} />
+          </Link>
+        </div>
+
+        <div className="table-responsive">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Sản Phẩm</th>
+                <th>Tồn Kho Thực Tế</th>
+                <th>Nhu Cầu Dự Báo 30 Ngày (AI)</th>
+                <th>Chênh Lệch Dư / Thiếu</th>
+                <th>Số Ngày Tồn An Toàn</th>
+                <th>Mức Độ Cảnh Báo AI</th>
+                <th>Hành Động Đề Xuất</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stockDemandForecast.length === 0 ? (
+                <tr>
+                  <td colSpan="7" style={{ textAlign: 'center', color: '#94a3b8', padding: '24px 0' }}>
+                    Đang tính toán mô hình dự báo AI...
+                  </td>
+                </tr>
+              ) : (
+                stockDemandForecast.map((item) => {
+                  const isRed = item.alert_level === 'CRITICAL_SHORTAGE'
+                  const isYellow = item.alert_level === 'WARNING_LOW'
+                  return (
+                    <tr key={item.product_id}>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{item.product_name}</div>
+                        <div style={{ fontSize: '0.74rem', color: '#64748b' }}>Mã: {item.product_code}</div>
+                      </td>
+                      <td style={{ fontWeight: 700, color: '#f8fafc' }}>
+                        {Number(item.current_stock).toLocaleString('vi-VN')} {item.unit}
+                      </td>
+                      <td style={{ fontWeight: 700, color: '#38bdf8' }}>
+                        {Number(item.projected_demand_30d).toLocaleString('vi-VN')} {item.unit}
+                      </td>
+                      <td style={{ fontWeight: 700, color: item.gap_quantity < 0 ? '#f43f5e' : '#10b981' }}>
+                        {item.gap_quantity > 0 ? `+${Number(item.gap_quantity).toLocaleString('vi-VN')}` : Number(item.gap_quantity).toLocaleString('vi-VN')} {item.unit}
+                      </td>
+                      <td style={{ fontWeight: 600, color: item.days_of_supply < 15 ? '#f43f5e' : '#cbd5e1' }}>
+                        {item.days_of_supply} ngày
+                      </td>
+                      <td>
+                        {isRed ? (
+                          <span
+                            className="badge"
+                            style={{
+                              background: 'rgba(244,63,94,0.18)',
+                              color: '#f43f5e',
+                              border: '1px solid rgba(244,63,94,0.4)',
+                              fontWeight: 700,
+                            }}
+                          >
+                            <AlertTriangle size={12} /> 🔴 Thiếu Hàng Trầm Trọng
+                          </span>
+                        ) : isYellow ? (
+                          <span
+                            className="badge"
+                            style={{
+                              background: 'rgba(245,158,11,0.18)',
+                              color: '#f59e0b',
+                              border: '1px solid rgba(245,158,11,0.4)',
+                              fontWeight: 700,
+                            }}
+                          >
+                            <AlertTriangle size={12} /> 🟡 Tồn Kho Cận Ngưỡng
+                          </span>
+                        ) : (
+                          <span className="badge badge-completed" style={{ fontWeight: 700 }}>
+                            <CheckCircle2 size={12} /> 🟢 Đủ Hàng An Toàn
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {isRed || isYellow ? (
+                          <Link
+                            to="/production"
+                            className="btn btn-primary btn-action"
+                            style={{ padding: '4px 10px', fontSize: '0.76rem', textDecoration: 'none' }}
+                          >
+                            <Factory size={13} />
+                            <span>Khởi Tạo Lệnh SX</span>
+                          </Link>
+                        ) : (
+                          <span style={{ fontSize: '0.78rem', color: '#10b981' }}>✓ Tồn tối ưu</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* GD_07: BẢNG THEO DÕI LỢI NHUẬN GỘP & CÔNG NỢ TỪNG KHÁCH HÀNG / ĐẠI LÝ */}
+      <div className="card" style={{ marginBottom: 28 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+          <div>
+            <h3 style={{ fontSize: '1.08rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <DollarSign size={18} color="#f59e0b" />
+              <span>Báo Cáo Lợi Nhuận Gộp & Bảng Theo Dõi Công Nợ Từng Khách Hàng (GD_07)</span>
+            </h3>
+            <p style={{ fontSize: '0.8rem', color: '#94a3b8', marginTop: 2 }}>
+              Phản ánh đúng chênh lệch Doanh thu - Chi phí vốn NVL; công nợ hiển thị chính xác số tiền đã thu và còn nợ của từng đại lý.
+            </p>
+          </div>
+
+          {/* Ô tìm kiếm tức thì theo tên / mã khách hàng (GD_07) */}
+          <div style={{ position: 'relative', width: 280 }}>
+            <Search size={15} style={{ position: 'absolute', left: 10, top: 10, color: '#64748b' }} />
+            <input
+              type="text"
+              className="form-input"
+              style={{ paddingLeft: 32, fontSize: '0.82rem' }}
+              placeholder="Tìm theo tên đại lý, mã KH..."
+              value={customerFinSearch}
+              onChange={(e) => setCustomerFinSearch(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="table-responsive">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Mã Đại Lý</th>
+                <th>Tên Khách Hàng / Đại Lý</th>
+                <th>Tổng Doanh Số</th>
+                <th>Giá Vốn COGS</th>
+                <th>Lợi Nhuận Gộp</th>
+                <th>Biên LN Gộp</th>
+                <th>Đã Thanh Toán</th>
+                <th>Công Nợ Còn Nợ</th>
+                <th>Hạn Mức Tín Dụng</th>
+                <th>Rủi Ro Công Nợ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredCustomerFin.length === 0 ? (
+                <tr>
+                  <td colSpan="10" style={{ textAlign: 'center', color: '#94a3b8', padding: '24px 0' }}>
+                    Chưa có số liệu tài chính khách hàng hoặc không tìm thấy kết quả.
+                  </td>
+                </tr>
+              ) : (
+                filteredCustomerFin.map((cf) => {
+                  const isHighRisk = cf.risk_level === 'HIGH' || cf.risk_level === 'OVERDUE'
+                  return (
+                    <tr key={cf.customer_id}>
+                      <td style={{ fontWeight: 700, color: '#38bdf8' }}>{cf.customer_code}</td>
+                      <td style={{ fontWeight: 600 }}>{cf.customer_name}</td>
+                      <td style={{ fontWeight: 700, color: '#f8fafc' }}>
+                        {Number(cf.total_sales).toLocaleString('vi-VN')} ₫
+                      </td>
+                      <td style={{ color: '#cbd5e1' }}>
+                        {Number(cf.total_cogs).toLocaleString('vi-VN')} ₫
+                      </td>
+                      <td style={{ fontWeight: 700, color: '#10b981' }}>
+                        {Number(cf.gross_profit).toLocaleString('vi-VN')} ₫
+                      </td>
+                      <td style={{ fontWeight: 600, color: '#38bdf8' }}>
+                        {cf.gross_margin_pct}%
+                      </td>
+                      <td style={{ color: '#94a3b8' }}>
+                        {Number(cf.paid_amount).toLocaleString('vi-VN')} ₫
+                      </td>
+                      <td style={{ fontWeight: 700, color: cf.current_debt > 0 ? '#f59e0b' : '#10b981' }}>
+                        {Number(cf.current_debt).toLocaleString('vi-VN')} ₫
+                      </td>
+                      <td style={{ color: '#cbd5e1' }}>
+                        {Number(cf.credit_limit).toLocaleString('vi-VN')} ₫
+                      </td>
+                      <td>
+                        {isHighRisk ? (
+                          <span className="badge" style={{ background: 'rgba(244,63,94,0.18)', color: '#f43f5e' }}>
+                            <ShieldAlert size={12} /> Vượt hạn mức
+                          </span>
+                        ) : cf.current_debt > 0 ? (
+                          <span className="badge badge-pending">Trong hạn mức</span>
+                        ) : (
+                          <span className="badge badge-completed">Đã tất toán</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -404,7 +741,7 @@ export default function Dashboard({ addToast }) {
         </div>
       </div>
 
-      {/* BẢNG KHUYẾN NGHỊ 4 GIAI ĐOẠN CHIẾN LƯỢC TỒN KHO & SẢN XUẤT AI (AI 4-STAGE ROADMAP) */}
+      {/* BẢNG KHUYẾN NGHỊ 4 GIAI ĐOẠN CHIẾN LƯỢC TỒN KHO & SẢN XUẤT AI */}
       <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 12 }}>
           <div>

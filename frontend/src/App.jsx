@@ -15,6 +15,7 @@ import Customers from './pages/Customers'
 import Storefront from './pages/Storefront'
 import Campaigns from './pages/Campaigns'
 import Login from './pages/Login'
+import DevRoleSwitcher from './components/DevRoleSwitcher'
 
 import { api } from './services/api'
 import './index.css'
@@ -22,10 +23,16 @@ import './index.css'
 export function getHomeRouteForRole(role) {
   switch (role) {
     case 'PRODUCTION_STAFF':
+    case 'QUAN_DOC_SAN_XUAT':
       return '/production'
     case 'WAREHOUSE_MANAGER':
+    case 'QUAN_LY_KHO':
     case 'PROCUREMENT':
       return '/inventory'
+    case 'QUAN_LY_PHAN_PHOI':
+    case 'DAI_LY':
+      return '/sales'
+    case 'GIAM_DOC':
     case 'ADMIN':
     default:
       return '/'
@@ -81,8 +88,8 @@ function RoleGuard({ currentUser, allowedRoles, isRoot = false, children }) {
 function LayoutShell({ children, dbEngine, toasts, onDismissToast, currentUser, onLogout }) {
   const location = useLocation()
 
-  // Màn hình /login hoặc khách vãng lai xem /store (chưa đăng nhập ERP) -> hiển thị độc lập không lộ Sidebar nội bộ
-  const isLoginPage = location.pathname === '/login'
+  // Màn hình /login hoặc khi chưa đăng nhập (trừ /store công khai) -> hiển thị shell độc lập không lộ Sidebar nội bộ
+  const isLoginPage = location.pathname === '/login' || (!currentUser && !location.pathname.startsWith('/store'))
   const isStoreRoute = location.pathname.startsWith('/store')
   const isPublicStoreOnly = isStoreRoute && !currentUser
 
@@ -216,7 +223,7 @@ export default function App() {
           <Route
             path="/"
             element={
-              <RoleGuard currentUser={currentUser} allowedRoles={['ADMIN']} isRoot={true}>
+              <RoleGuard currentUser={currentUser} allowedRoles={['ADMIN', 'GIAM_DOC']} isRoot={true}>
                 <Dashboard addToast={addToast} />
               </RoleGuard>
             }
@@ -226,7 +233,7 @@ export default function App() {
             element={
               <RoleGuard
                 currentUser={currentUser}
-                allowedRoles={['ADMIN', 'PRODUCTION_STAFF', 'WAREHOUSE_MANAGER']}
+                allowedRoles={['ADMIN', 'GIAM_DOC', 'PRODUCTION_STAFF', 'QUAN_DOC_SAN_XUAT', 'WAREHOUSE_MANAGER', 'QUAN_LY_KHO']}
               >
                 <Production addToast={addToast} currentUser={currentUser} />
               </RoleGuard>
@@ -237,7 +244,7 @@ export default function App() {
             element={
               <RoleGuard
                 currentUser={currentUser}
-                allowedRoles={['ADMIN', 'PRODUCTION_STAFF', 'PROCUREMENT']}
+                allowedRoles={['ADMIN', 'GIAM_DOC', 'PRODUCTION_STAFF', 'QUAN_DOC_SAN_XUAT', 'PROCUREMENT']}
               >
                 <BOM />
               </RoleGuard>
@@ -246,7 +253,10 @@ export default function App() {
           <Route
             path="/sales"
             element={
-              <RoleGuard currentUser={currentUser} allowedRoles={['ADMIN', 'WAREHOUSE_MANAGER']}>
+              <RoleGuard
+                currentUser={currentUser}
+                allowedRoles={['ADMIN', 'GIAM_DOC', 'WAREHOUSE_MANAGER', 'QUAN_LY_KHO', 'QUAN_LY_PHAN_PHOI', 'DAI_LY']}
+              >
                 <Sales addToast={addToast} />
               </RoleGuard>
             }
@@ -256,7 +266,7 @@ export default function App() {
             element={
               <RoleGuard
                 currentUser={currentUser}
-                allowedRoles={['ADMIN', 'WAREHOUSE_MANAGER', 'PROCUREMENT']}
+                allowedRoles={['ADMIN', 'GIAM_DOC', 'WAREHOUSE_MANAGER', 'QUAN_LY_KHO', 'PROCUREMENT']}
               >
                 <Inventory addToast={addToast} currentUser={currentUser} />
               </RoleGuard>
@@ -265,7 +275,7 @@ export default function App() {
           <Route
             path="/customers"
             element={
-              <RoleGuard currentUser={currentUser} allowedRoles={['ADMIN']}>
+              <RoleGuard currentUser={currentUser} allowedRoles={['ADMIN', 'GIAM_DOC', 'QUAN_LY_PHAN_PHOI']}>
                 <Customers addToast={addToast} />
               </RoleGuard>
             }
@@ -273,12 +283,19 @@ export default function App() {
           <Route
             path="/campaigns"
             element={
-              <RoleGuard currentUser={currentUser} allowedRoles={['ADMIN']}>
+              <RoleGuard currentUser={currentUser} allowedRoles={['ADMIN', 'GIAM_DOC']}>
                 <Campaigns addToast={addToast} />
               </RoleGuard>
             }
           />
         </Routes>
+        {currentUser && (
+          <DevRoleSwitcher
+            currentUser={currentUser}
+            onRoleSwitch={(u) => setCurrentUser(u)}
+            addToast={addToast}
+          />
+        )}
       </LayoutShell>
     </BrowserRouter>
   )

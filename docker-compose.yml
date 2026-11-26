@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: erp_password
       POSTGRES_DB: enterprise_erp
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - pg_erp_data:/var/lib/postgresql/data
       - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
@@ -30,12 +30,6 @@ services:
     volumes:
       - n8n_erp_data:/home/node/.n8n
       - ./n8n/workflows:/backup/workflows
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: erp_cloudflare_tunnel
-    restart: unless-stopped
-    command: tunnel --no-autoupdate --url http://host.docker.internal:8000
 
 volumes:
   pg_erp_data:

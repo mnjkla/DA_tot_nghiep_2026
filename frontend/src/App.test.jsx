@@ -155,4 +155,27 @@ describe('App Shell, RBAC Guard & Navigation (Seam 2 - Version 1.4.0)', () => {
       expect(screen.getByText(/Gemini API Key \(Google AI Studio\)/i)).toBeInTheDocument()
     })
   })
+
+  it('renders 1-Click Dev Role Switcher for authenticated users and allows switching roles (Version 1.9.0)', async () => {
+    localStorage.setItem(
+      'erp_user',
+      JSON.stringify({
+        user_id: 1,
+        username: 'admin',
+        full_name: 'Trần Quốc Bảo (Admin Dev Mode)',
+        role: 'ADMIN',
+      })
+    )
+    localStorage.setItem('erp_auth_token', 'token_admin_1_admin')
+    window.history.pushState({}, '', '/')
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/1-Click Role Switcher/i)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Quản Đốc SX/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Trưởng Kho/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Đại Lý/i })).toBeInTheDocument()
+    })
+  })
 })

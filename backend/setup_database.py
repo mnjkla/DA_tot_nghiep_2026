@@ -19,7 +19,9 @@ def convert_ddl_to_sqlite(sql_text: str) -> str:
     sql = re.sub(r"DROP TABLE IF EXISTS (\w+) CASCADE;", r"DROP TABLE IF EXISTS \1;", sql_text)
     sql = re.sub(r"\bSERIAL PRIMARY KEY\b", "INTEGER PRIMARY KEY AUTOINCREMENT", sql)
     sql = re.sub(r"\bTIMESTAMP\b", "DATETIME", sql)
+    sql = re.sub(r"\bBOOLEAN\b", "INTEGER", sql)
     sql = re.sub(r"\bDECIMAL\(\d+,\s*\d+\)", "NUMERIC", sql)
+    sql = re.sub(r"\bINT\b", "INTEGER", sql)
     return sql
 
 
@@ -55,26 +57,32 @@ def init_database(force_reinit: bool = False):
 
     if needs_init:
         print(f"[Database] Đang khởi tạo CSDL mới tại: {SQLITE_DB_PATH}...")
+        if os.path.exists(SQLITE_DB_PATH):
+            try:
+                os.remove(SQLITE_DB_PATH)
+            except Exception:
+                pass
+
         conn = sqlite3.connect(SQLITE_DB_PATH)
         cur = conn.cursor()
 
-        # 1. Nạp schema 19 bảng ERP chuẩn
+        # 1. Nạp schema 24 bảng ERP chuẩn
         if os.path.exists(SCHEMA_FILE):
-            print(f"[Database] -> Nạp schema từ {os.path.basename(SCHEMA_FILE)}...")
+            print(f"[Database] -> Nạp schema 24 bảng từ {os.path.basename(SCHEMA_FILE)}...")
             with open(SCHEMA_FILE, "r", encoding="utf-8") as f:
                 schema_sql = convert_ddl_to_sqlite(f.read())
                 cur.executescript(schema_sql)
 
-        # 2. Nạp dữ liệu mẫu seed.sql
+        # 2. Nạp dữ liệu thực tế seed.sql
         if os.path.exists(SEED_FILE):
-            print(f"[Database] -> Nạp dữ liệu mẫu từ {os.path.basename(SEED_FILE)}...")
+            print(f"[Database] -> Nạp bộ dữ liệu thực tế từ {os.path.basename(SEED_FILE)}...")
             with open(SEED_FILE, "r", encoding="utf-8") as f:
                 cur.executescript(f.read())
 
         conn.commit()
         conn.close()
 
-        # 3. Kích hoạt schema bổ sung và seed người dùng/chiến dịch
+        # 3. Kích hoạt schema bổ sung và seed người dùng/chiến dịch nếu cần
         sys.path.insert(0, os.path.join(BASE_DIR, "backend"))
         try:
             import main
@@ -89,4 +97,3 @@ def init_database(force_reinit: bool = False):
 if __name__ == "__main__":
     force = "--reset" in sys.argv or "--force" in sys.argv
     init_database(force_reinit=force)
-

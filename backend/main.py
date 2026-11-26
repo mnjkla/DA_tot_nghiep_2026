@@ -1,6 +1,12 @@
 import os
 import sys
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
 import sqlite3
+from datetime import datetime, date
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,29 +29,33 @@ app.add_middleware(
 
 # Cấu hình Kết nối CSDL: Ưu tiên PostgreSQL, tự động Fallback SQLite
 DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
+DB_PORT = os.getenv("DB_PORT", "5434")
 DB_NAME = os.getenv("DB_NAME", "enterprise_erp")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASS = os.getenv("DB_PASS", "postgrespassword")
+DB_USER = os.getenv("DB_USER", "erp_user")
+DB_PASS = os.getenv("DB_PASS", "erp_password")
 SQLITE_DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database", "enterprise_erp.db"))
 
 ACTIVE_DB_MODE = "SQLITE"
 
 def check_postgres_available():
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASS,
-            connect_timeout=2
-        )
-        conn.close()
-        return True
-    except Exception:
-        return False
+    import time
+    for attempt in range(3):
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                dbname=DB_NAME,
+                user=DB_USER,
+                password=DB_PASS,
+                connect_timeout=3
+            )
+            conn.close()
+            return True
+        except Exception:
+            if attempt < 2:
+                time.sleep(0.5)
+    return False
 
 if check_postgres_available():
     ACTIVE_DB_MODE = "POSTGRESQL"
@@ -103,8 +113,13 @@ class DBContext:
             rows = cur.fetchall()
             return [dict(ix) for ix in rows]
         else:
-            cur.execute(sql, params)
-            return cur.fetchall()
+            try:
+                cur.execute(sql, params)
+                return cur.fetchall()
+            except Exception:
+                if self.conn:
+                    self.conn.rollback()
+                raise
 
     def execute(self, sql: str, params: tuple = ()):
         cur = self.conn.cursor()
@@ -113,13 +128,67 @@ class DBContext:
             cur.execute(sql_conv, params)
             return cur.lastrowid
         else:
-            cur.execute(sql, params)
-            return cur
+            try:
+                sql_clean = sql.strip().rstrip(";")
+                if sql_clean.upper().startswith("INSERT INTO") and "RETURNING" not in sql_clean.upper():
+                    cur.execute(sql_clean + " RETURNING *;", params)
+                    try:
+                        row = cur.fetchone()
+                        if row:
+                            if isinstance(row, dict):
+                                return list(row.values())[0]
+                            return row[0]
+                    except Exception:
+                        pass
+                    return None
+                cur.execute(sql, params)
+                return cur
+            except Exception:
+                if self.conn:
+                    self.conn.rollback()
+                raise
+
+def sync_postgres_sequences():
+    if ACTIVE_DB_MODE != "POSTGRESQL":
+        return
+    try:
+        with DBContext() as db:
+            cur = db.conn.cursor()
+            cur.execute("""
+                SELECT c.relname AS seq_name, t.relname AS table_name, a.attname AS col_name
+                FROM pg_class c
+                JOIN pg_depend d ON d.objid = c.oid
+                JOIN pg_class t ON t.oid = d.refobjid
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+                WHERE c.relkind = 'S';
+            """)
+            rows = cur.fetchall()
+            for row in rows:
+                if isinstance(row, dict):
+                    seq_name = row["seq_name"]
+                    table_name = row["table_name"]
+                    col_name = row["col_name"]
+                else:
+                    seq_name, table_name, col_name = row[0], row[1], row[2]
+                cur.execute(f"SELECT COALESCE(MAX({col_name}), 0) FROM {table_name};")
+                max_row = cur.fetchone()
+                max_val = max_row["coalesce"] if isinstance(max_row, dict) else max_row[0]
+                cur.execute(f"SELECT setval('{seq_name}', {max(int(max_val or 0), 1)}, true);")
+            db.conn.commit()
+    except Exception as e:
+        print("[Sync Postgres Sequences Warning]:", e)
+
+sync_postgres_sequences()
 
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 FRONTEND_DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
+SPA_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 
 @app.get("/api/health")
 def api_health():
@@ -135,19 +204,16 @@ def api_health():
 def read_root():
     index_file = os.path.join(FRONTEND_DIST_DIR, "index.html")
     if os.path.isfile(index_file):
-        return FileResponse(index_file)
+        return FileResponse(index_file, headers=SPA_NO_CACHE_HEADERS)
     return api_health()
 
 def ensure_v140_schema():
     """
-    Tự động khởi tạo và nâng cấp cấu trúc CSDL cho Version 1.4.0:
-    - Bảng users (RBAC 4 vai trò: ADMIN, WAREHOUSE_MANAGER, PRODUCTION_STAFF, PROCUREMENT)
-    - Bảng campaigns (Flash Sale, Video Showcase, Regional Banner)
-    - Bảng material_requisitions (Phiếu yêu cầu xuất NVL 2 bước: Sản xuất lập -> Trưởng kho duyệt)
-    - Bảng material_receipts (Phiếu thu mua nhập kho NVL theo giá biến động thị trường)
-    - Mở rộng cột cho products (image_url, target_region, health_benefits, case_spec, wholesale_moq)
-    - Mở rộng cột cho materials (unit_cost)
+    Tự động khởi tạo và nâng cấp cấu trúc CSDL cho Version 1.4.0 (cho SQLite fallback).
+    Khi kết nối PostgreSQL, cấu trúc và seed đã được nạp qua database/schema.sql và seed.sql.
     """
+    if ACTIVE_DB_MODE == "POSTGRESQL":
+        return
     try:
         with DBContext() as db:
             # 1. Bảng users
@@ -460,17 +526,38 @@ def get_users():
 # 1. API SẢN XUẤT, DANH MỤC ĐỘNG & DUYỆT KHO 2 BƯỚC (PRODUCTION, CATALOG & REQUISITION)
 # =============================================================================
 @app.get("/api/products")
-def get_products():
-    """Lấy danh sách các dòng sản phẩm chính và quy cách đóng gói"""
+def get_products(selling_only: Optional[bool] = False):
+    """Lấy danh sách các dòng sản phẩm chính và quy cách đóng gói (hỗ trợ lọc sản phẩm đang bán - PP_01)"""
     with DBContext() as db:
         sql = """
             SELECT p.*, COALESCE(c.category_name, 'Thực phẩm & Đồ uống') as category_name
             FROM products p 
             LEFT JOIN product_categories c ON p.category_id = c.category_id 
-            ORDER BY p.product_id;
         """
+        if selling_only:
+            sql += " WHERE (p.is_selling = TRUE OR p.is_selling = 1 OR p.is_selling IS NULL) "
+        sql += " ORDER BY p.product_id;"
         products = db.query(sql)
     return {"data": products, "total": len(products)}
+
+class ProductSellingStatusUpdate(BaseModel):
+    is_selling: bool
+
+@app.put("/api/products/{product_id}/selling-status")
+def update_product_selling_status(product_id: int, req: ProductSellingStatusUpdate):
+    """Chuyển đổi trạng thái kinh doanh Đang bán / Ngừng bán của sản phẩm (PP_01)"""
+    with DBContext() as db:
+        prod = db.query("SELECT product_name FROM products WHERE product_id = %s;", (product_id,))
+        if not prod:
+            raise HTTPException(status_code=404, detail="Không tìm thấy sản phẩm")
+        db.execute("UPDATE products SET is_selling = %s WHERE product_id = %s;", (req.is_selling, product_id))
+        st_text = "ĐANG BÁN" if req.is_selling else "NGỪNG BÁN"
+    return {
+        "success": True,
+        "message": f"Đã chuyển trạng thái sản phẩm '{prod[0]['product_name']}' sang [{st_text}]",
+        "product_id": product_id,
+        "is_selling": req.is_selling
+    }
 
 class ProductCreateUpdate(BaseModel):
     product_code: Optional[str] = None
@@ -572,18 +659,50 @@ def update_product(product_id: int, prod: ProductCreateUpdate):
 
     return {"success": True, "message": f"Đã cập nhật thông tin & giá sản phẩm '{prod.product_name}' thành công!"}
 
+class BOMItemSave(BaseModel):
+    material_id: int
+    quantity_required: float
+    notes: Optional[str] = ""
+
+class BOMUpdatePayload(BaseModel):
+    items: List[BOMItemSave]
+    version_code: Optional[str] = None
+
 @app.get("/api/bom/{product_id}")
 def get_bom(product_id: int):
     """Lấy định mức sản xuất (BOM) cho 1 sản phẩm"""
     with DBContext() as db:
         sql = """
-            SELECT b.*, m.material_code, m.material_name, m.unit as material_unit
+            SELECT b.*, m.material_code, m.material_name, m.unit as material_unit, m.unit_cost, m.current_stock
             FROM bill_of_materials b
             JOIN materials m ON b.material_id = m.material_id
-            WHERE b.product_id = %s;
+            WHERE b.product_id = %s
+            ORDER BY b.bom_id;
         """
         bom_items = db.query(sql, (product_id,))
     return {"product_id": product_id, "bom": bom_items}
+
+@app.post("/api/bom/{product_id}")
+def update_product_bom(product_id: int, payload: BOMUpdatePayload):
+    """Cập nhật định mức BOM và tự động tạo mã phiên bản mới dạng BOM_SPxx_DDMMYY_vX (QDSX_02)"""
+    import random
+    date_code = datetime.now().strftime("%d%m%y")
+    gen_version = payload.version_code or f"BOM_SP{product_id:02d}_{date_code}_v{random.randint(1, 99)}"
+
+    with DBContext() as db:
+        # Xóa BOM cũ của sản phẩm và nạp danh sách mới
+        db.execute("DELETE FROM bill_of_materials WHERE product_id = %s;", (product_id,))
+        for it in payload.items:
+            db.execute("""
+                INSERT INTO bill_of_materials (product_id, material_id, quantity_required, unit, notes, version_code)
+                VALUES (%s, %s, %s, (SELECT unit FROM materials WHERE material_id = %s), %s, %s);
+            """, (product_id, it.material_id, it.quantity_required, it.material_id, it.notes or "", gen_version))
+
+    return {
+        "success": True,
+        "message": f"Cập nhật thành công định mức BOM (Phiên bản {gen_version})",
+        "bom_version": gen_version
+    }
 
 @app.get("/api/materials")
 def get_materials():
@@ -658,17 +777,23 @@ class ProductionOrderCreate(BaseModel):
     target_quantity: int
     notes: Optional[str] = "Lệnh sản xuất mới"
     requested_by: Optional[str] = "sanxuat (Lê Văn Xuất)"
+    workshop_id: Optional[int] = 1
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    bom_version: Optional[str] = None
 
 @app.get("/api/production-orders")
 def get_production_orders():
-    """Lấy danh sách các lệnh sản xuất kèm trạng thái Phiếu yêu cầu xuất NVL (2-Step Workflow)"""
+    """Lấy danh sách các lệnh sản xuất kèm trạng thái Phiếu yêu cầu xuất NVL và Phân xưởng phụ trách"""
     with DBContext() as db:
         sql = """
             SELECT po.*, p.product_name, p.product_code, p.unit,
+                   ws.workshop_name, ws.workshop_code, ws.manager_name, ws.contact_phone,
                    mr.req_id, mr.req_code, mr.status as requisition_status,
                    mr.requested_by, mr.approved_by, mr.approved_at
             FROM production_orders po
             JOIN products p ON po.product_id = p.product_id
+            LEFT JOIN workshops ws ON po.workshop_id = ws.workshop_id
             LEFT JOIN material_requisitions mr ON mr.prod_order_id = po.order_id
             ORDER BY po.order_id DESC;
         """
@@ -678,18 +803,22 @@ def get_production_orders():
 @app.post("/api/production-orders")
 def create_production_order(order: ProductionOrderCreate):
     """
-    Tạo mới một lệnh sản xuất (Trạng thái PENDING)
+    Tạo mới một lệnh sản xuất (Trạng thái PENDING) kèm mốc thời gian và xưởng phụ trách.
     Đồng thời tự động khởi tạo Phiếu Yêu Cầu Xuất NVL (material_requisitions) ở trạng thái PENDING_APPROVAL (Chờ Trưởng Kho Duyệt)
     """
     import random
     order_code = f"PO-2026-{random.randint(1000, 9999)}"
     req_code = f"REQ-NVL-{random.randint(1000, 9999)}"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    start_dt = order.start_time or now_str
+    bom_ver = order.bom_version or f"BOM_SP{order.product_id:02d}_{datetime.now().strftime('%d%m%y')}_v1"
+
     with DBContext() as db:
         sql = """
-            INSERT INTO production_orders (order_code, product_id, target_quantity, status, notes)
-            VALUES (%s, %s, %s, 'PENDING', %s);
+            INSERT INTO production_orders (order_code, product_id, workshop_id, target_quantity, status, start_time, end_time, bom_version, receipt_status, notes)
+            VALUES (%s, %s, %s, %s, 'PENDING', %s, %s, %s, 'CHO_NHAP_KHO', %s);
         """
-        new_id = db.execute(sql, (order_code, order.product_id, order.target_quantity, order.notes))
+        new_id = db.execute(sql, (order_code, order.product_id, order.workshop_id or 1, order.target_quantity, start_dt, order.end_time, bom_ver, order.notes))
 
         # Sinh tự động Phiếu yêu cầu xuất NVL chờ Trưởng kho duyệt (chưa trừ kho)
         db.execute("""
@@ -698,15 +827,53 @@ def create_production_order(order: ProductionOrderCreate):
         """, (
             req_code, new_id, order.product_id,
             order.requested_by or "sanxuat (Lê Văn Xuất)",
-            f"Phiếu yêu cầu xuất NVL theo BOM cho lệnh {order_code} ({order.target_quantity} sản phẩm) - Chờ Trưởng kho phê duyệt"
+            f"Phiếu yêu cầu xuất NVL theo BOM ({bom_ver}) cho lệnh {order_code} ({order.target_quantity} sản phẩm) - Chờ Trưởng kho phê duyệt"
         ))
 
     return {
         "message": "Tạo lệnh sản xuất & gửi Phiếu yêu cầu xuất NVL chờ Trưởng kho duyệt thành công",
         "order_code": order_code,
         "req_code": req_code,
-        "id": new_id
+        "id": new_id,
+        "bom_version": bom_ver
     }
+
+@app.get("/api/production-orders/{order_id}/details")
+def get_production_order_details(order_id: int):
+    """Xem chi tiết lệnh sản xuất: Định mức BOM áp dụng, tổng NVL cần dùng, tiến độ & xưởng phụ trách (QDSX_04)"""
+    with DBContext() as db:
+        order = db.query("""
+            SELECT po.*, p.product_name, p.product_code, p.unit, p.selling_price, p.cost_price,
+                   ws.workshop_name, ws.workshop_code, ws.manager_name, ws.contact_phone, ws.location as workshop_location,
+                   mr.req_id, mr.req_code, mr.status as requisition_status, mr.approved_by, mr.approved_at
+            FROM production_orders po
+            JOIN products p ON po.product_id = p.product_id
+            LEFT JOIN workshops ws ON po.workshop_id = ws.workshop_id
+            LEFT JOIN material_requisitions mr ON mr.prod_order_id = po.order_id
+            WHERE po.order_id = %s;
+        """, (order_id,))
+        if not order:
+            raise HTTPException(status_code=404, detail="Không tìm thấy lệnh sản xuất")
+        ord_info = order[0]
+
+        bom_items = db.query("""
+            SELECT b.*, m.material_code, m.material_name, m.unit as material_unit, m.current_stock, m.unit_cost
+            FROM bill_of_materials b
+            JOIN materials m ON b.material_id = m.material_id
+            WHERE b.product_id = %s;
+        """, (ord_info["product_id"],))
+
+        target_qty = ord_info.get("target_quantity") or 0
+        total_materials_cost = 0.0
+        for it in bom_items:
+            req_qty = round(float(it["quantity_required"]) * target_qty, 4)
+            it["total_required_quantity"] = req_qty
+            it["line_estimated_cost"] = round(req_qty * float(it.get("unit_cost") or 0.0), 2)
+            total_materials_cost += it["line_estimated_cost"]
+
+        ord_info["bom_items"] = bom_items
+        ord_info["total_materials_cost"] = total_materials_cost
+        return ord_info
 
 @app.post("/api/production-orders/{order_id}/request-materials")
 def request_materials_for_po(order_id: int, requested_by: Optional[str] = "sanxuat (Lê Văn Xuất)"):
@@ -928,11 +1095,51 @@ def complete_production_order(order_id: int):
 # 2. API BÁN HÀNG & KHO (SALES & INVENTORY MODULE)
 # =============================================================================
 @app.get("/api/customers")
-def get_customers():
-    """Lấy danh sách khách hàng và phân loại"""
+def get_customers(staff_user_id: Optional[int] = None):
+    """Lấy danh sách khách hàng và phân loại (hỗ trợ lọc theo nhân viên tiếp thị phụ trách)"""
     with DBContext() as db:
-        customers = db.query("SELECT * FROM customers ORDER BY customer_id;")
+        if staff_user_id:
+            sql = """
+                SELECT c.*, 1 as is_assigned_to_me
+                FROM customers c
+                JOIN staff_agent_assignments saa ON c.customer_id = saa.customer_id
+                WHERE saa.user_id = %s
+                ORDER BY c.customer_id;
+            """
+            customers = db.query(sql, (staff_user_id,))
+        else:
+            customers = db.query("SELECT * FROM customers ORDER BY customer_id;")
     return {"data": customers}
+
+class CustomerUpdate(BaseModel):
+    customer_name: Optional[str] = None
+    customer_type: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    credit_limit: Optional[float] = None
+
+@app.put("/api/customers/{customer_id}")
+def update_customer_profile(customer_id: int, req: CustomerUpdate):
+    """Cập nhật thông tin hồ sơ và hạn mức tín dụng khách hàng/đại lý (PP_03)"""
+    with DBContext() as db:
+        c = db.query("SELECT * FROM customers WHERE customer_id = %s;", (customer_id,))
+        if not c:
+            raise HTTPException(status_code=404, detail="Không tìm thấy khách hàng")
+        curr = c[0]
+        name = req.customer_name if req.customer_name is not None else curr["customer_name"]
+        ctype = req.customer_type if req.customer_type is not None else curr["customer_type"]
+        phone = req.phone if req.phone is not None else curr.get("phone", "")
+        email = req.email if req.email is not None else curr.get("email", "")
+        address = req.address if req.address is not None else curr.get("address", "")
+        limit = req.credit_limit if req.credit_limit is not None else curr.get("credit_limit", 0)
+
+        db.execute("""
+            UPDATE customers
+            SET customer_name = %s, customer_type = %s, phone = %s, email = %s, address = %s, credit_limit = %s
+            WHERE customer_id = %s;
+        """, (name, ctype, phone, email, address, limit, customer_id))
+    return {"success": True, "message": f"Cập nhật hồ sơ khách hàng '{name}' thành công"}
 
 @app.get("/api/inventory/finished-goods")
 def get_finished_goods():
@@ -959,16 +1166,27 @@ class SalesOrderCreate(BaseModel):
     notes: Optional[str] = "Đơn bán hàng mới"
 
 @app.get("/api/sales-orders")
-def get_sales_orders():
-    """Lấy danh sách đơn hàng bán"""
+def get_sales_orders(staff_user_id: Optional[int] = None):
+    """Lấy danh sách đơn hàng bán (hỗ trợ lọc theo nhân viên tiếp thị phụ trách)"""
     with DBContext() as db:
-        sql = """
-            SELECT so.*, c.customer_name, c.customer_type, c.phone
-            FROM sales_orders so
-            JOIN customers c ON so.customer_id = c.customer_id
-            ORDER BY so.sales_order_id DESC;
-        """
-        orders = db.query(sql)
+        if staff_user_id:
+            sql = """
+                SELECT so.*, c.customer_name, c.customer_type, c.phone
+                FROM sales_orders so
+                JOIN customers c ON so.customer_id = c.customer_id
+                JOIN staff_agent_assignments saa ON so.customer_id = saa.customer_id
+                WHERE saa.user_id = %s
+                ORDER BY so.sales_order_id DESC;
+            """
+            orders = db.query(sql, (staff_user_id,))
+        else:
+            sql = """
+                SELECT so.*, c.customer_name, c.customer_type, c.phone
+                FROM sales_orders so
+                JOIN customers c ON so.customer_id = c.customer_id
+                ORDER BY so.sales_order_id DESC;
+            """
+            orders = db.query(sql)
     return {"data": orders}
 
 @app.post("/api/sales-orders")
@@ -1048,13 +1266,22 @@ def dispatch_sales_order(order_id: int):
 # 3. API DASHBOARD STATS (THỐNG KÊ REAL-TIME)
 # =============================================================================
 @app.get("/api/dashboard/stats")
-def get_dashboard_stats():
-    """Lấy dữ liệu tổng hợp cho các thẻ chỉ số trên Dashboard"""
+def get_dashboard_stats(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """Lấy dữ liệu tổng hợp cho các thẻ chỉ số trên Dashboard (hỗ trợ lọc Ngày/Tháng)"""
     with DBContext() as db:
         # Doanh thu từ sales_orders hoàn thành (nếu chưa có đơn thì dùng baseline seed)
-        rev_rows = db.query("SELECT SUM(final_amount) as total_rev FROM sales_orders WHERE status = 'COMPLETED'")
-        real_rev = rev_rows[0]["total_rev"] if rev_rows and rev_rows[0]["total_rev"] else 0
-        total_revenue = 485000000.0 + float(real_rev)
+        if start_date and end_date:
+            rev_rows = db.query("""
+                SELECT SUM(final_amount) as total_rev 
+                FROM sales_orders 
+                WHERE status = 'COMPLETED' AND order_date >= %s AND order_date <= %s;
+            """, (f"{start_date} 00:00:00", f"{end_date} 23:59:59"))
+            real_rev = rev_rows[0]["total_rev"] if rev_rows and rev_rows[0]["total_rev"] else 0
+            total_revenue = float(real_rev)
+        else:
+            rev_rows = db.query("SELECT SUM(final_amount) as total_rev FROM sales_orders WHERE status = 'COMPLETED'")
+            real_rev = rev_rows[0]["total_rev"] if rev_rows and rev_rows[0]["total_rev"] else 0
+            total_revenue = 485000000.0 + float(real_rev)
 
         # Tổng tồn kho thành phẩm
         fg_rows = db.query("SELECT SUM(quantity_in_stock) as total_fg FROM finished_goods_inventory")
@@ -1073,13 +1300,17 @@ def get_dashboard_stats():
         "finished_goods_count": total_fg,
         "raw_bird_nest_stock": yen_tho,
         "active_production_orders": active_po,
-        "database_engine": ACTIVE_DB_MODE
+        "database_engine": ACTIVE_DB_MODE,
+        "filter_applied": bool(start_date and end_date)
     }
 
 # =============================================================================
 # 4. API AI INTEGRATION (CHATBOT RAG & GEMINI API INTELLIGENT ADVISOR)
 # =============================================================================
-from gemini_service import get_gemini_config, update_gemini_config, ask_erp_copilot, call_gemini_api
+try:
+    from gemini_service import get_gemini_config, update_gemini_config, ask_erp_copilot, call_gemini_api
+except ImportError:
+    from backend.gemini_service import get_gemini_config, update_gemini_config, ask_erp_copilot, call_gemini_api
 
 class ChatQuery(BaseModel):
     question: str
@@ -1297,6 +1528,162 @@ def get_ai_profit_forecast():
         "strategic_phases": strategic_phases
     }
 
+@app.get("/api/bi/customer-financials")
+def get_bi_customer_financials(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """
+    Theo dõi chi tiết Doanh thu, Lợi nhuận và Công nợ theo từng Khách hàng/Đại lý (GD_06, GD_07)
+    """
+    with DBContext() as db:
+        customers = db.query("""
+            SELECT customer_id, customer_code, customer_name, customer_type, phone, region, credit_limit, current_debt
+            FROM customers
+            ORDER BY customer_id;
+        """)
+
+        date_filter = ""
+        params = []
+        if start_date and end_date:
+            date_filter = "AND so.order_date >= %s AND so.order_date <= %s"
+            params = [f"{start_date} 00:00:00", f"{end_date} 23:59:59"]
+
+        order_stats = db.query(f"""
+            SELECT so.customer_id, 
+                   COUNT(so.sales_order_id) as order_count,
+                   COALESCE(SUM(so.final_amount), 0) as total_revenue
+            FROM sales_orders so
+            WHERE so.status = 'COMPLETED' {date_filter}
+            GROUP BY so.customer_id;
+        """, tuple(params))
+
+        stats_map = {row["customer_id"]: row for row in order_stats}
+
+        results = []
+        for c in customers:
+            cid = c["customer_id"]
+            stat = stats_map.get(cid, {"order_count": 0, "total_revenue": 0.0})
+            rev = float(stat["total_revenue"] or 0.0)
+            cogs = round(rev * 0.52, 2)
+            gross_profit = round(rev - cogs, 2)
+            margin = round((gross_profit / rev * 100), 1) if rev > 0 else 48.0
+            debt = float(c.get("current_debt") or 0.0)
+            limit = float(c.get("credit_limit") or 1.0)
+            debt_pct = min(100.0, round(debt / limit * 100, 1)) if limit > 0 else 0.0
+
+            results.append({
+                "customer_id": cid,
+                "customer_code": c["customer_code"],
+                "customer_name": c["customer_name"],
+                "customer_type": c["customer_type"],
+                "phone": c.get("phone") or "",
+                "region": c.get("region") or "ALL",
+                "order_count": stat["order_count"],
+                "total_revenue": rev,
+                "estimated_cogs": cogs,
+                "gross_profit": gross_profit,
+                "margin_pct": margin,
+                "credit_limit": limit,
+                "current_debt": debt,
+                "debt_usage_pct": debt_pct,
+                "debt_status": "DANGER" if debt_pct >= 90 else ("WARNING" if debt_pct >= 60 else "NORMAL")
+            })
+
+        return {"data": results, "total": len(results)}
+
+@app.get("/api/bi/stock-demand-forecast")
+def get_bi_stock_demand_forecast():
+    """
+    AI Dự Báo Nhu Cầu & Tồn Kho 30 Ngày Tới (GD_09):
+    Đánh giá chi tiết tình trạng Thiếu/An Toàn/Dư thừa từng sản phẩm và đưa ra khuyến nghị AI hành động.
+    """
+    with DBContext() as db:
+        products = db.query("""
+            SELECT p.product_id, p.product_code, p.product_name, p.selling_price, p.cost_price, p.case_spec,
+                   c.category_name
+            FROM products p
+            LEFT JOIN product_categories c ON p.category_id = c.category_id
+            WHERE p.status = 'ACTIVE'
+            ORDER BY p.product_id;
+        """)
+
+        stock_rows = db.query("""
+            SELECT product_id, COALESCE(SUM(quantity_in_stock), 0) as total_stock
+            FROM finished_goods_inventory
+            GROUP BY product_id;
+        """)
+        stock_map = {r["product_id"]: int(r["total_stock"]) for r in stock_rows}
+
+        sold_rows = db.query("""
+            SELECT sod.product_id, COALESCE(SUM(sod.quantity), 0) as total_sold
+            FROM sales_order_details sod
+            JOIN sales_orders so ON sod.sales_order_id = so.sales_order_id
+            WHERE so.status = 'COMPLETED'
+            GROUP BY sod.product_id;
+        """)
+        sold_map = {r["product_id"]: int(r["total_sold"]) for r in sold_rows}
+
+        baseline_demands = {
+            1: 850,   # Yến Lọ 70ml
+            2: 600,   # Yến Chai 150ml
+            3: 1500,  # Yến Lon 190ml
+            4: 450,   # Cháo Yến
+            5: 350,   # Cà Phê Phin Giấy
+        }
+
+        forecast_data = []
+        for p in products:
+            pid = p["product_id"]
+            cur_stock = stock_map.get(pid, 0)
+            sold_qty = sold_map.get(pid, 0)
+            base_d = baseline_demands.get(pid, 500)
+            forecast_demand = max(base_d, int(sold_qty * 1.25))
+
+            diff = cur_stock - forecast_demand
+            days_of_supply = round(cur_stock / (forecast_demand / 30.0), 1) if forecast_demand > 0 else 99.0
+
+            if cur_stock < int(forecast_demand * 0.4):
+                status = "CRITICAL_SHORTAGE"
+                badge = "🔴 Thiếu Hàng Nghiêm Trọng"
+                color = "#f43f5e"
+                recommendation = f"Cảnh báo: Tồn kho chỉ còn đủ dùng trong {days_of_supply} ngày! Cần lập Lệnh sản xuất tối thiểu {abs(diff)} sản phẩm để tránh đứt gãy cung ứng."
+                action_needed = "CREATE_PO"
+            elif cur_stock < forecast_demand:
+                status = "LOW_STOCK"
+                badge = "🟡 Cận Ngưỡng An Toàn"
+                color = "#f59e0b"
+                recommendation = f"Tồn kho ở mức thấp ({days_of_supply} ngày). Đề xuất Quản đốc chuẩn bị kế hoạch sản xuất trong tuần tới."
+                action_needed = "PREPARE_PO"
+            elif cur_stock > int(forecast_demand * 2.5):
+                status = "OVERSTOCK"
+                badge = "🔵 Dư Thừa Tồn Kho"
+                color = "#38bdf8"
+                recommendation = f"Tồn kho dư thừa lớn ({days_of_supply} ngày bán). Khuyến nghị triển khai Flash Sale hoặc chiết khấu sỉ B2B để thu hồi vốn lưu động."
+                action_needed = "FLASHSALE"
+            else:
+                status = "SAFE"
+                badge = "🟢 Tồn Kho Lý Tưởng"
+                color = "#10b981"
+                recommendation = f"Tồn kho đạt chuẩn an toàn ({days_of_supply} ngày cung ứng), đáp ứng hoàn hảo các đơn sỉ và lẻ trong tháng."
+                action_needed = "NONE"
+
+            forecast_data.append({
+                "product_id": pid,
+                "product_code": p["product_code"],
+                "product_name": p["product_name"],
+                "category_name": p.get("category_name") or "Thực phẩm & Đồ uống",
+                "selling_price": float(p.get("selling_price") or 0.0),
+                "current_stock": cur_stock,
+                "forecast_demand_30d": forecast_demand,
+                "difference": diff,
+                "days_of_supply": days_of_supply,
+                "status": status,
+                "badge": badge,
+                "color": color,
+                "recommendation": recommendation,
+                "action_needed": action_needed
+            })
+
+        return {"data": forecast_data, "total": len(forecast_data)}
+
 class StrategyExecuteRequest(BaseModel):
     phase_code: str
 
@@ -1421,8 +1808,8 @@ def calculate_item_pricing(db, product_id: int, quantity: int, is_agent: bool = 
 
     # Tra cứu chính sách giá từ CSDL
     policies = db.query("SELECT * FROM price_policies WHERE product_id = %s", (product_id,))
-    agent_policy = next((p for p in policies if p["customer_type"] == "AGENT_VIP"), None)
-    moq_policy = next((p for p in policies if p["customer_type"] == "WHOLESALE_MOQ"), None)
+    agent_policy = next((p for p in policies if p["customer_type"] in ("AGENT_VIP", "AGENT")), None)
+    moq_policy = next((p for p in policies if p["customer_type"] in ("WHOLESALE_MOQ", "WHOLESALE")), None)
 
     # 1. Nếu là Đại lý B2B chính thức -> Ưu tiên giá Agent VIP
     if is_agent and agent_policy:
@@ -3290,7 +3677,9 @@ PRODUCT_DETAIL_PROFILES = {
 
 
 def ensure_v170_schema():
-    """Khởi tạo bảng product_reviews và dữ liệu đánh giá thực tế của người mua cho Version 1.7.0"""
+    """Khởi tạo bảng product_reviews và dữ liệu đánh giá thực tế của người mua cho Version 1.7.0 (cho SQLite fallback)"""
+    if ACTIVE_DB_MODE == "POSTGRESQL":
+        return
     with DBContext() as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS product_reviews (
@@ -3485,6 +3874,1579 @@ def create_product_review(product_id: int, req: ProductReviewCreate):
 
 
 # =============================================================================
+# 11. PHÂN HỆ MỞ RỘNG V1.9.0: NHÂN SỰ XƯỞNG, PHÂN PHỐI ĐẠI LÝ & ĐỔI TRẢ
+# =============================================================================
+
+def ensure_v190_schema():
+    """
+    Tự động nâng cấp CSDL cho Version 1.9.0 (thực dụng theo đề tài):
+    - Bổ sung 6 bảng: workshops, workers, work_shifts, production_worker_assignments, dealer_purchase_requests, order_returns
+    - Bổ sung cột workshop_id vào production_orders
+    - Seed danh mục xưởng, công nhân, ca làm và chuẩn hóa 6 tài khoản người dùng
+    """
+    with DBContext() as db:
+        is_pg = (db.mode == "POSTGRESQL")
+        pk_type = "SERIAL PRIMARY KEY" if is_pg else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        ts_type = "TIMESTAMP" if is_pg else "DATETIME"
+        dec_type = "DECIMAL(15,2)" if is_pg else "NUMERIC"
+
+        # 1. Bảng workshops
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS workshops (
+                workshop_id {pk_type},
+                workshop_code VARCHAR(30) UNIQUE NOT NULL,
+                workshop_name VARCHAR(150) NOT NULL,
+                workshop_type VARCHAR(50) NOT NULL,
+                location VARCHAR(255) NOT NULL,
+                manager_name VARCHAR(100),
+                capacity_per_day INT DEFAULT 2000,
+                status VARCHAR(20) DEFAULT 'ACTIVE',
+                created_at {ts_type} DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 2. Bảng workers
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS workers (
+                worker_id {pk_type},
+                worker_code VARCHAR(30) UNIQUE NOT NULL,
+                full_name VARCHAR(100) NOT NULL,
+                phone VARCHAR(20),
+                workshop_id INT,
+                skill_level VARCHAR(50) DEFAULT 'THO_CHINH',
+                specialty VARCHAR(100),
+                hourly_rate {dec_type} DEFAULT 35000.00,
+                status VARCHAR(20) DEFAULT 'ACTIVE',
+                created_at {ts_type} DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 3. Bảng work_shifts
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS work_shifts (
+                shift_id {pk_type},
+                shift_code VARCHAR(30) UNIQUE NOT NULL,
+                shift_name VARCHAR(100) NOT NULL,
+                start_time VARCHAR(10) NOT NULL,
+                end_time VARCHAR(10) NOT NULL,
+                standard_hours {dec_type} DEFAULT 8.0,
+                description TEXT,
+                created_at {ts_type} DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 4. Bảng production_worker_assignments
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS production_worker_assignments (
+                assignment_id {pk_type},
+                production_order_id INT NOT NULL,
+                worker_id INT NOT NULL,
+                shift_id INT,
+                assigned_date DATE NOT NULL,
+                planned_hours {dec_type} DEFAULT 8.0,
+                actual_hours {dec_type} DEFAULT 8.0,
+                output_completed INT DEFAULT 0,
+                notes TEXT,
+                created_at {ts_type} DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 5. Bảng dealer_purchase_requests
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS dealer_purchase_requests (
+                request_id {pk_type},
+                request_code VARCHAR(30) UNIQUE NOT NULL,
+                customer_id INT NOT NULL,
+                product_id INT NOT NULL,
+                quantity_requested INT NOT NULL,
+                unit_price {dec_type} NOT NULL,
+                total_amount {dec_type} NOT NULL,
+                status VARCHAR(30) DEFAULT 'CHO_XU_LY',
+                expected_delivery_date DATE,
+                notes TEXT,
+                sales_order_id INT,
+                supplementary_prod_order_id INT,
+                created_at {ts_type} DEFAULT CURRENT_TIMESTAMP,
+                resolved_at {ts_type}
+            );
+        """)
+
+        # 6. Bảng order_returns
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS order_returns (
+                return_id {pk_type},
+                return_code VARCHAR(30) UNIQUE NOT NULL,
+                sales_order_id INT,
+                customer_id INT NOT NULL,
+                product_id INT NOT NULL,
+                quantity_returned INT NOT NULL,
+                reason TEXT NOT NULL,
+                resolution_type VARCHAR(30) DEFAULT 'TRU_CONG_NO',
+                amount_compensated {dec_type} DEFAULT 0.00,
+                status VARCHAR(30) DEFAULT 'DA_XU_LY',
+                notes TEXT,
+                created_at {ts_type} DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 7. Bảng staff_agent_assignments (Phân quyền đại lý cho nhân viên tiếp thị / phân phối)
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS staff_agent_assignments (
+                assignment_id {pk_type},
+                user_id INT NOT NULL,
+                customer_id INT NOT NULL,
+                assigned_at {ts_type} DEFAULT CURRENT_TIMESTAMP,
+                notes TEXT,
+                CONSTRAINT uq_staff_customer UNIQUE (user_id, customer_id)
+            );
+        """)
+
+        # Cột workshop_id và defect_rate cho production_orders
+        if is_pg:
+            try:
+                db.execute("ALTER TABLE production_orders ADD COLUMN IF NOT EXISTS workshop_id INT;")
+            except Exception:
+                pass
+            try:
+                db.execute(f"ALTER TABLE production_orders ADD COLUMN IF NOT EXISTS defect_rate {dec_type} DEFAULT 0.0;")
+            except Exception:
+                pass
+        else:
+            try:
+                db.execute("ALTER TABLE production_orders ADD COLUMN workshop_id INT;")
+            except Exception:
+                pass
+            try:
+                db.execute(f"ALTER TABLE production_orders ADD COLUMN defect_rate {dec_type} DEFAULT 0.0;")
+            except Exception:
+                pass
+
+        # Cập nhật defect_rate cho đơn hoàn thành có hao hụt mẫu
+        try:
+            db.execute("UPDATE production_orders SET defect_rate = 14.5 WHERE LOWER(order_code) = 'po-2026-003';")
+        except Exception:
+            pass
+
+        # Seed Phân xưởng mẫu
+        w_cnt = db.query("SELECT COUNT(*) as cnt FROM workshops;")[0]["cnt"]
+        if w_cnt == 0:
+            seed_workshops = [
+                ("WS01", "Xưởng Chưng Yến Vô Trùng Khánh Hòa", "YEN_SAO", "Số 12 Trần Phú, TP. Nha Trang, Khánh Hòa", "Lê Văn Sản", 3000),
+                ("WS02", "Xưởng Rang Xay & Đóng Gói Cà Phê Cầu Đất", "CA_PHE", "Xã Xuân Trường, TP. Đà Lạt, Lâm Đồng", "Trần Hữu Nghị", 2500),
+                ("WS03", "Phân Xưởng Hoàn Thiện & Đóng Gói Sài Gòn", "DONG_GOI", "KCN Tân Bình, Quận Tân Phú, TP.HCM", "Nguyễn Thị Hoa", 5000),
+            ]
+            for c, n, t, loc, mgr, cap in seed_workshops:
+                db.execute("""
+                    INSERT INTO workshops (workshop_code, workshop_name, workshop_type, location, manager_name, capacity_per_day, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'ACTIVE');
+                """, (c, n, t, loc, mgr, cap))
+
+        # Seed Ca làm việc mẫu
+        s_cnt = db.query("SELECT COUNT(*) as cnt FROM work_shifts;")[0]["cnt"]
+        if s_cnt == 0:
+            seed_shifts = [
+                ("CA-1", "Ca Sáng Sản Xuất", "06:00", "14:00", 8.0, "Ca chế biến sơ chế nguyên liệu & hấp tiệt trùng mẻ đầu ngày"),
+                ("CA-2", "Ca Chiều Hoàn Thiện", "14:00", "22:00", 8.0, "Ca đóng gói, dán nhãn, siết nắp và kiểm định thành phẩm"),
+                ("CA-HC", "Ca Hành Chính Kỹ Thuật", "08:00", "17:00", 8.0, "Ca quản lý xưởng, bảo trì máy móc và kiểm tra QA/QC"),
+            ]
+            for c, n, st, et, hr, ds in seed_shifts:
+                db.execute("""
+                    INSERT INTO work_shifts (shift_code, shift_name, start_time, end_time, standard_hours, description)
+                    VALUES (%s, %s, %s, %s, %s, %s);
+                """, (c, n, st, et, hr, ds))
+
+        # Seed Công nhân mẫu
+        wk_cnt = db.query("SELECT COUNT(*) as cnt FROM workers;")[0]["cnt"]
+        if wk_cnt == 0:
+            seed_workers = [
+                ("CN01", "Trần Văn Lành", "0912345001", 1, "THO_CHINH", "Sơ chế & nhặt lông yến rút khô", 42000),
+                ("CN02", "Lê Thị Mười", "0912345002", 1, "THO_CHINH", "Vận hành nồi chưng tiệt trùng 121 độ C", 40000),
+                ("CN03", "Nguyễn Văn Đức", "0912345003", 1, "THO_PHU", "Rửa sấy tiệt trùng hũ & siết nắp thiếc", 32000),
+                ("CN04", "Phạm Quốc Cường", "0912345004", 2, "THO_CHINH", "Vận hành máy rang cà phê khí nóng Probat", 45000),
+                ("CN05", "Đặng Thị Lan", "0912345005", 2, "KY_THUAT_VIEN", "Đóng gói phin giấy & kiểm định cupping", 38000),
+                ("CN06", "Bùi Văn Tài", "0912345006", 3, "THO_PHU", "Đóng thùng carton, dán tem QR & bốc xếp pallet", 32000),
+            ]
+            for c, fn, ph, wid, sk, sp, rt in seed_workers:
+                db.execute("""
+                    INSERT INTO workers (worker_code, full_name, phone, workshop_id, skill_level, specialty, hourly_rate, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE');
+                """, (c, fn, ph, wid, sk, sp, rt))
+
+        # Seed Yêu cầu nhập hàng từ Đại lý mẫu
+        dr_cnt = db.query("SELECT COUNT(*) as cnt FROM dealer_purchase_requests;")[0]["cnt"]
+        if dr_cnt == 0:
+            seed_dealer_reqs = [
+                ("DLR-2026-001", 1, 1, 100, 38000, 3800000, "DU_HANG_DA_XUAT", "2026-02-01", "Đại lý Tâm An đặt 100 lọ yến chưng - Kho đủ tồn đã xuất"),
+                ("DLR-2026-002", 2, 2, 300, 38000, 11400000, "THIEU_HANG_CHO_SX", "2026-02-15", "Siêu thị GreenMart đặt 300 chai yến - Thiếu 120 chai, đã gửi yêu cầu SX"),
+                ("DLR-2026-003", 3, 5, 50, 60000, 3000000, "CHO_XU_LY", "2026-02-10", "Chuỗi Cafe Bình Minh yêu cầu nhập 50 hộp cà phê phin giấy"),
+            ]
+            for rc, cid, pid, qty, prc, tot, st, edd, nt in seed_dealer_reqs:
+                db.execute("""
+                    INSERT INTO dealer_purchase_requests (request_code, customer_id, product_id, quantity_requested, unit_price, total_amount, status, expected_delivery_date, notes)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                """, (rc, cid, pid, qty, prc, tot, st, edd, nt))
+
+        # Seed Đổi trả hàng mẫu
+        ret_cnt = db.query("SELECT COUNT(*) as cnt FROM order_returns;")[0]["cnt"]
+        if ret_cnt == 0:
+            db.execute("""
+                INSERT INTO order_returns (return_code, sales_order_id, customer_id, product_id, quantity_returned, reason, resolution_type, amount_compensated, status, notes)
+                VALUES (%s, 1, 1, 1, 2, 'Vỡ 2 lọ thủy tinh do đơn vị vận chuyển dằn xóc', 'TRU_CONG_NO', 90000, 'DA_XU_LY', 'Đã cấn trừ 90,000 đ vào công nợ đại lý Tâm An');
+            """, ("RET-2026-001",))
+
+        # Cập nhật danh sách 6 vai trò tài khoản chuẩn
+        roles_to_seed = [
+            ("admin", "admin123", "Trần Quốc Bảo (Admin Dev Mode)", "ADMIN", "admin@yencaphe.vn"),
+            ("giamdoc", "giamdoc123", "Trần Quốc Bảo (Giám Đốc)", "GIAM_DOC", "giamdoc@yencaphe.vn"),
+            ("kho", "kho123", "Nguyễn Văn Kho (Trưởng Kho)", "QUAN_LY_KHO", "kho@yencaphe.vn"),
+            ("sanxuat", "sanxuat123", "Lê Văn Sản (Quản Đốc SX)", "QUAN_DOC_SAN_XUAT", "sanxuat@yencaphe.vn"),
+            ("phanphoi", "phanphoi123", "Hoàng Thị Phân Phối (QL Đại Lý Miền Nam)", "QUAN_LY_PHAN_PHOI", "phanphoi@yencaphe.vn"),
+            ("tiepthi1", "tiepthi123", "Nguyễn Văn Tiếp Thị (QL Đại Lý Miền Trung/Bắc)", "QUAN_LY_PHAN_PHOI", "tiepthi1@yencaphe.vn"),
+            ("daily1", "daily123", "Đại Lý Yến Cà Phê Tâm An", "DAI_LY", "taman@daily.vn"),
+            ("thumua", "thumua123", "Phạm Thị Mua (Ban Thu Mua)", "PROCUREMENT", "thumua@yencaphe.vn"),
+            ("sx", "sx123", "Lê Văn Sản (Alias SX)", "PRODUCTION_STAFF", "sx@yencaphe.vn"),
+        ]
+        for u, p, fn, r, em in roles_to_seed:
+            ex = db.query("SELECT user_id FROM users WHERE LOWER(username) = %s;", (u.lower(),))
+            if not ex:
+                db.execute("""
+                    INSERT INTO users (username, password_hash, full_name, role, email, status)
+                    VALUES (%s, %s, %s, %s, %s, 'ACTIVE');
+                """, (u, p, fn, r, em))
+            else:
+                db.execute("UPDATE users SET full_name = %s, role = %s WHERE LOWER(username) = %s;", (fn, r, u.lower()))
+
+        # Seed Phân công đại lý mẫu cho nhân viên tiếp thị
+        saa_cnt = db.query("SELECT COUNT(*) as cnt FROM staff_agent_assignments;")[0]["cnt"]
+        if saa_cnt == 0:
+            u_pp = db.query("SELECT user_id FROM users WHERE LOWER(username) = 'phanphoi';")
+            u_tt = db.query("SELECT user_id FROM users WHERE LOWER(username) = 'tiepthi1';")
+            if u_pp:
+                pp_id = u_pp[0]["user_id"]
+                # phanphoi phụ trách đại lý 1, 2, 5
+                for cid in [1, 2, 5]:
+                    db.execute("INSERT INTO staff_agent_assignments (user_id, customer_id, notes) VALUES (%s, %s, %s);",
+                               (pp_id, cid, "Gán phụ trách quản lý đại lý & kênh phân phối miền Nam"))
+            if u_tt:
+                tt_id = u_tt[0]["user_id"]
+                # tiepthi1 phụ trách đại lý 3, 4
+                for cid in [3, 4]:
+                    db.execute("INSERT INTO staff_agent_assignments (user_id, customer_id, notes) VALUES (%s, %s, %s);",
+                               (tt_id, cid, "Gán phụ trách quản lý đại lý & kênh phân phối miền Trung/Bắc"))
+
+ensure_v190_schema()
+
+def ensure_v200_schema():
+    """
+    Nâng cấp CSDL Version 2.0.0 phục vụ trọn vẹn 3 tác nhân:
+    - Bổ sung contact_phone cho workshops
+    - Bổ sung status cho suppliers
+    - Bổ sung bom_version và receipt_status cho production_orders
+    - Bổ sung version_code cho bill_of_materials
+    """
+    with DBContext() as db:
+        is_pg = (db.mode == "POSTGRESQL")
+        if is_pg:
+            try:
+                db.execute("ALTER TABLE workshops ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(20);")
+            except Exception:
+                pass
+            try:
+                db.execute("ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'ACTIVE';")
+            except Exception:
+                pass
+            try:
+                db.execute("ALTER TABLE production_orders ADD COLUMN IF NOT EXISTS bom_version VARCHAR(50);")
+            except Exception:
+                pass
+            try:
+                db.execute("ALTER TABLE production_orders ADD COLUMN IF NOT EXISTS receipt_status VARCHAR(30) DEFAULT 'CHO_NHAP_KHO';")
+            except Exception:
+                pass
+            try:
+                db.execute("ALTER TABLE bill_of_materials ADD COLUMN IF NOT EXISTS version_code VARCHAR(50);")
+            except Exception:
+                pass
+        else:
+            for sql in [
+                "ALTER TABLE workshops ADD COLUMN contact_phone TEXT;",
+                "ALTER TABLE suppliers ADD COLUMN status TEXT DEFAULT 'ACTIVE';",
+                "ALTER TABLE production_orders ADD COLUMN bom_version TEXT;",
+                "ALTER TABLE production_orders ADD COLUMN receipt_status TEXT DEFAULT 'CHO_NHAP_KHO';",
+                "ALTER TABLE bill_of_materials ADD COLUMN version_code TEXT;",
+            ]:
+                try:
+                    db.execute(sql)
+                except Exception:
+                    pass
+
+        try:
+            db.execute("UPDATE workshops SET contact_phone = '0905123456' WHERE workshop_code = 'WS01' AND (contact_phone IS NULL OR contact_phone = '');")
+            db.execute("UPDATE workshops SET contact_phone = '0908765432' WHERE workshop_code = 'WS02' AND (contact_phone IS NULL OR contact_phone = '');")
+            db.execute("UPDATE workshops SET contact_phone = '0901234888' WHERE workshop_code = 'WS03' AND (contact_phone IS NULL OR contact_phone = '');")
+            db.execute("UPDATE suppliers SET status = 'ACTIVE' WHERE status IS NULL OR status = '';")
+            db.execute("UPDATE production_orders SET receipt_status = 'DA_NHAP_KHO' WHERE LOWER(status) = 'completed' OR LOWER(status) = 'hoan_thanh';")
+            db.execute("UPDATE production_orders SET receipt_status = 'CHO_NHAP_KHO' WHERE (receipt_status IS NULL OR receipt_status = '') AND LOWER(status) != 'completed' AND LOWER(status) != 'hoan_thanh';")
+        except Exception:
+            pass
+
+ensure_v200_schema()
+
+def ensure_v210_schema():
+    """
+    Nâng cấp CSDL Version 2.1.0:
+    - Bổ sung cột is_selling cho products (PP_01)
+    - Tạo bảng warehouses cho quản lý kho (QLK mới)
+    - Bổ sung cột dispatch_code cho dealer_purchase_requests phục vụ quy trình 6 bước
+    """
+    with DBContext() as db:
+        is_pg = (db.mode == "POSTGRESQL")
+        if is_pg:
+            try:
+                db.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS is_selling BOOLEAN DEFAULT TRUE;")
+            except Exception:
+                pass
+            try:
+                db.execute("ALTER TABLE dealer_purchase_requests ADD COLUMN IF NOT EXISTS dispatch_code VARCHAR(50);")
+            except Exception:
+                pass
+            try:
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS warehouses (
+                        warehouse_id SERIAL PRIMARY KEY,
+                        warehouse_code VARCHAR(50) UNIQUE NOT NULL,
+                        warehouse_name VARCHAR(150) NOT NULL,
+                        warehouse_type VARCHAR(50) NOT NULL DEFAULT 'KHO_THANH_PHAM',
+                        manager_name VARCHAR(100),
+                        contact_phone VARCHAR(20),
+                        location VARCHAR(255),
+                        capacity VARCHAR(100),
+                        status VARCHAR(20) DEFAULT 'ACTIVE',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+            except Exception:
+                pass
+        else:
+            for sql in [
+                "ALTER TABLE products ADD COLUMN is_selling INTEGER DEFAULT 1;",
+                "ALTER TABLE dealer_purchase_requests ADD COLUMN dispatch_code TEXT;",
+                """CREATE TABLE IF NOT EXISTS warehouses (
+                    warehouse_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    warehouse_code TEXT UNIQUE NOT NULL,
+                    warehouse_name TEXT NOT NULL,
+                    warehouse_type TEXT NOT NULL DEFAULT 'KHO_THANH_PHAM',
+                    manager_name TEXT,
+                    contact_phone TEXT,
+                    location TEXT,
+                    capacity TEXT,
+                    status TEXT DEFAULT 'ACTIVE',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );"""
+            ]:
+                try:
+                    db.execute(sql)
+                except Exception:
+                    pass
+
+        try:
+            db.execute("UPDATE products SET is_selling = TRUE WHERE is_selling IS NULL;")
+            # Seed 2 kho ban đầu nếu bảng warehouses đang trống
+            cnt = db.query("SELECT COUNT(*) as cnt FROM warehouses;")[0]["cnt"]
+            if cnt == 0:
+                seed_whs = [
+                    ("KHO_NVL_01", "Kho Nguyên Vật Liệu & Bao Bì Khánh Hòa", "KHO_NGUYEN_VAT_LIEU", "Nguyễn Văn Kho", "0901000005", "Lô C1, KCN Suối Dầu, Cam Lâm, Khánh Hòa", "50 Tấn Yến Thô & Chai Lọ", "ACTIVE"),
+                    ("KHO_TP_01", "Kho Thành Phẩm Trung Tâm TP.HCM", "KHO_THANH_PHAM", "Lê Thị Thủ Kho", "0908555666", "Kho B3, KCN Tân Bình, Tây Thạnh, Tân Phú, TP.HCM", "100.000 Hộp/Lon/Chai", "ACTIVE")
+                ]
+                for code, name, wtype, mgr, phone, loc, cap, st in seed_whs:
+                    db.execute("""
+                        INSERT INTO warehouses (warehouse_code, warehouse_name, warehouse_type, manager_name, contact_phone, location, capacity, status)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                    """, (code, name, wtype, mgr, phone, loc, cap, st))
+        except Exception:
+            pass
+
+ensure_v210_schema()
+
+
+# =============================================================================
+# API PHÂN XƯỞNG SẢN XUẤT (QUẢN ĐỐC SẢN XUẤT - QDSX_03)
+# =============================================================================
+
+@app.get("/api/production/workshops")
+def get_workshops():
+    """Lấy danh sách các phân xưởng sản xuất kèm số điện thoại liên hệ"""
+    with DBContext() as db:
+        data = db.query("SELECT * FROM workshops ORDER BY workshop_id;")
+    return {"data": data, "total": len(data)}
+
+class WorkshopCreate(BaseModel):
+    workshop_code: str
+    workshop_name: str
+    workshop_type: str = "YEN_SAO"
+    location: str
+    manager_name: Optional[str] = "Lê Văn Sản"
+    contact_phone: Optional[str] = "0905123456"
+    capacity_per_day: Optional[int] = 2000
+
+@app.post("/api/production/workshops")
+def create_workshop(req: WorkshopCreate):
+    """Tạo phân xưởng sản xuất mới"""
+    with DBContext() as db:
+        new_id = db.execute("""
+            INSERT INTO workshops (workshop_code, workshop_name, workshop_type, location, manager_name, contact_phone, capacity_per_day, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE');
+        """, (req.workshop_code.strip(), req.workshop_name.strip(), req.workshop_type, req.location, req.manager_name, req.contact_phone, req.capacity_per_day))
+    return {"success": True, "message": f"Tạo thành công phân xưởng {req.workshop_name}", "workshop_id": new_id}
+
+class WorkshopUpdate(BaseModel):
+    workshop_name: str
+    workshop_type: str = "YEN_SAO"
+    location: str
+    manager_name: Optional[str] = ""
+    contact_phone: Optional[str] = ""
+    capacity_per_day: Optional[int] = 2000
+    status: Optional[str] = "ACTIVE"
+
+@app.put("/api/production/workshops/{workshop_id}")
+def update_workshop(workshop_id: int, req: WorkshopUpdate):
+    """Cập nhật thông tin phân xưởng sản xuất (QDSX_03)"""
+    with DBContext() as db:
+        db.execute("""
+            UPDATE workshops 
+            SET workshop_name = %s, workshop_type = %s, location = %s,
+                manager_name = %s, contact_phone = %s, capacity_per_day = %s, status = %s
+            WHERE workshop_id = %s;
+        """, (req.workshop_name.strip(), req.workshop_type, req.location, req.manager_name, req.contact_phone, req.capacity_per_day, req.status, workshop_id))
+    return {"success": True, "message": f"Cập nhật thông tin phân xưởng '{req.workshop_name}' thành công"}
+
+@app.get("/api/production/workshops/{workshop_id}/history")
+def get_workshop_orders_history(workshop_id: int):
+    """Lấy danh sách các lệnh sản xuất từng được phân bổ cho phân xưởng này (QDSX_03)"""
+    with DBContext() as db:
+        orders = db.query("""
+            SELECT po.*, p.product_name, p.product_code, p.unit
+            FROM production_orders po
+            JOIN products p ON po.product_id = p.product_id
+            WHERE po.workshop_id = %s
+            ORDER BY po.order_id DESC;
+        """, (workshop_id,))
+    return {"data": orders, "total": len(orders)}
+
+# =============================================================================
+# API QUẢN LÝ NHÀ CUNG CẤP NGUYÊN VẬT LIỆU (QUẢN LÝ KHO - QLK_01)
+# =============================================================================
+
+class SupplierCreateUpdate(BaseModel):
+    supplier_code: str
+    supplier_name: str
+    phone: Optional[str] = ""
+    email: Optional[str] = ""
+    address: Optional[str] = ""
+    status: Optional[str] = "ACTIVE"
+
+@app.get("/api/suppliers")
+def get_suppliers(q: Optional[str] = None, status: Optional[str] = None):
+    """Lấy danh sách nhà cung cấp NVL kèm tìm kiếm & lọc trạng thái (QLK_01)"""
+    with DBContext() as db:
+        sql = "SELECT * FROM suppliers WHERE 1=1"
+        params = []
+        if status:
+            sql += " AND UPPER(status) = UPPER(%s)"
+            params.append(status)
+        if q:
+            kw = f"%{q.strip().lower()}%"
+            sql += " AND (LOWER(supplier_name) LIKE %s OR LOWER(supplier_code) LIKE %s OR LOWER(phone) LIKE %s)"
+            params.extend([kw, kw, kw])
+        sql += " ORDER BY supplier_id;"
+        data = db.query(sql, tuple(params))
+    return {"data": data, "total": len(data)}
+
+@app.post("/api/suppliers")
+def create_supplier(req: SupplierCreateUpdate):
+    """Thêm mới nhà cung cấp nguyên vật liệu (QLK_01)"""
+    with DBContext() as db:
+        existing = db.query("SELECT supplier_id FROM suppliers WHERE UPPER(supplier_code) = %s;", (req.supplier_code.strip().upper(),))
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Mã nhà cung cấp '{req.supplier_code}' đã tồn tại")
+        new_id = db.execute("""
+            INSERT INTO suppliers (supplier_code, supplier_name, phone, email, address, status)
+            VALUES (%s, %s, %s, %s, %s, %s);
+        """, (req.supplier_code.strip().upper(), req.supplier_name.strip(), req.phone, req.email, req.address, req.status or "ACTIVE"))
+    return {"success": True, "message": f"Thêm mới nhà cung cấp '{req.supplier_name}' thành công", "supplier_id": new_id}
+
+@app.put("/api/suppliers/{supplier_id}")
+def update_supplier(supplier_id: int, req: SupplierCreateUpdate):
+    """Cập nhật thông tin hoặc trạng thái hợp tác của nhà cung cấp (QLK_01)"""
+    with DBContext() as db:
+        db.execute("""
+            UPDATE suppliers 
+            SET supplier_name = %s, phone = %s, email = %s, address = %s, status = %s
+            WHERE supplier_id = %s;
+        """, (req.supplier_name.strip(), req.phone, req.email, req.address, req.status or "ACTIVE", supplier_id))
+    return {"success": True, "message": f"Cập nhật nhà cung cấp '{req.supplier_name}' thành công"}
+
+@app.delete("/api/suppliers/{supplier_id}")
+def delete_or_deactivate_supplier(supplier_id: int):
+    """Ngừng hợp tác hoặc xóa nhà cung cấp nếu chưa có phiếu nhập phát sinh (QLK_01)"""
+    with DBContext() as db:
+        sup = db.query("SELECT * FROM suppliers WHERE supplier_id = %s;", (supplier_id,))
+        if not sup:
+            raise HTTPException(status_code=404, detail="Không tìm thấy nhà cung cấp")
+        sname = sup[0]["supplier_name"]
+        rcs = db.query("SELECT receipt_id FROM material_receipts WHERE supplier_name = %s;", (sname,))
+        if rcs:
+            db.execute("UPDATE suppliers SET status = 'INACTIVE' WHERE supplier_id = %s;", (supplier_id,))
+            return {"success": True, "message": f"Nhà cung cấp '{sname}' đã có lịch sử nhập hàng nên hệ thống chuyển trạng thái sang [NGỪNG HỢP TÁC]", "action": "DEACTIVATED"}
+        else:
+            db.execute("DELETE FROM suppliers WHERE supplier_id = %s;", (supplier_id,))
+            return {"success": True, "message": f"Đã xóa hoàn toàn nhà cung cấp '{sname}'", "action": "DELETED"}
+
+# =============================================================================
+# API DUYỆT NHẬP KHO THÀNH PHẨM SAU SẢN XUẤT (QUẢN LÝ KHO - QLK_06)
+# =============================================================================
+
+class FinishedGoodsReceiveRequest(BaseModel):
+    order_id: int
+    batch_number: Optional[str] = None
+    received_quantity: int = 0
+    manufacture_date: Optional[str] = None
+    expiry_date: Optional[str] = None
+    notes: Optional[str] = "Thủ kho duyệt nhập thành phẩm từ xưởng sản xuất"
+    approved_by: Optional[str] = "kho"
+
+@app.get("/api/inventory/pending-finished-goods")
+def get_pending_finished_goods():
+    """Lấy danh sách các lệnh sản xuất đã hoàn thành nhưng đang chờ Thủ kho duyệt nhập thành phẩm (QLK_06)"""
+    with DBContext() as db:
+        sql = """
+            SELECT po.*, p.product_name, p.product_code, p.unit, p.cost_price,
+                   ws.workshop_name, ws.workshop_code
+            FROM production_orders po
+            JOIN products p ON po.product_id = p.product_id
+            LEFT JOIN workshops ws ON po.workshop_id = ws.workshop_id
+            WHERE (LOWER(po.status) = 'completed' OR LOWER(po.status) = 'hoan_thanh')
+              AND (po.receipt_status IS NULL OR po.receipt_status != 'DA_NHAP_KHO')
+            ORDER BY po.order_id DESC;
+        """
+        data = db.query(sql)
+    return {"data": data, "total": len(data)}
+
+@app.post("/api/inventory/receive-finished-goods")
+def receive_finished_goods(req: FinishedGoodsReceiveRequest):
+    """
+    Thủ kho xác nhận duyệt nhập kho thành phẩm sau sản xuất (QLK_06):
+    - Cập nhật lệnh sản xuất receipt_status = 'DA_NHAP_KHO'
+    - Cộng số lượng vào kho thành phẩm finished_goods_inventory kèm số lô, NSX, HSD
+    - Đẩy thông báo chuông hệ thống
+    """
+    with DBContext() as db:
+        orders = db.query("SELECT * FROM production_orders WHERE order_id = %s;", (req.order_id,))
+        if not orders:
+            raise HTTPException(status_code=404, detail="Không tìm thấy lệnh sản xuất")
+        order = orders[0]
+        pid = order["product_id"]
+        qty = req.received_quantity if req.received_quantity > 0 else (order.get("completed_quantity") or order.get("target_quantity") or 100)
+        
+        from datetime import timedelta
+        batch = req.batch_number or f"BATCH-{order['order_code']}"
+        mfg = req.manufacture_date or datetime.now().strftime("%Y-%m-%d")
+        exp = req.expiry_date or (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
+
+        # Cập nhật trạng thái lệnh sản xuất
+        db.execute("""
+            UPDATE production_orders 
+            SET receipt_status = 'DA_NHAP_KHO', completed_quantity = %s
+            WHERE order_id = %s;
+        """, (qty, req.order_id))
+
+        # Nhập kho thành phẩm: Kiểm tra đã có bản ghi batch_number này chưa
+        exist_inv = db.query("SELECT inventory_id, quantity_in_stock FROM finished_goods_inventory WHERE product_id = %s AND batch_number = %s;", (pid, batch))
+        if exist_inv:
+            db.execute("UPDATE finished_goods_inventory SET quantity_in_stock = quantity_in_stock + %s WHERE inventory_id = %s;", (qty, exist_inv[0]["inventory_id"]))
+        else:
+            cost_p = db.query("SELECT cost_price FROM products WHERE product_id = %s;", (pid,))
+            c_val = cost_p[0]["cost_price"] if cost_p and cost_p[0]["cost_price"] else 25000.0
+            db.execute("""
+                INSERT INTO finished_goods_inventory (product_id, batch_number, quantity_in_stock, manufacture_date, expiry_date, unit_cost)
+                VALUES (%s, %s, %s, %s, %s, %s);
+            """, (pid, batch, qty, mfg, exp, c_val))
+
+        # Bắn thông báo hệ thống
+        db.execute("""
+            INSERT INTO system_notifications (title, message, severity, is_read)
+            VALUES (%s, %s, 'SUCCESS', FALSE);
+        """, (
+            f"Duyệt nhập kho thành phẩm: Lệnh {order['order_code']}",
+            f"Thủ kho {req.approved_by} đã duyệt nhập kho {qty} sản phẩm (Lô {batch}, HSD: {exp}) từ xưởng sản xuất."
+        ))
+
+    return {
+        "success": True,
+        "message": f"Duyệt nhập kho thành công {qty} sản phẩm theo lệnh {order['order_code']}",
+        "batch_number": batch,
+        "quantity_received": qty
+    }
+    return {"success": True, "message": f"Tạo thành công phân xưởng {req.workshop_name}", "workshop_id": new_id}
+
+@app.get("/api/production/workers")
+def get_workers():
+    """Lấy danh sách công nhân xưởng kèm thông tin xưởng phụ trách"""
+    with DBContext() as db:
+        sql = """
+            SELECT w.*, ws.workshop_name, ws.workshop_type 
+            FROM workers w
+            LEFT JOIN workshops ws ON w.workshop_id = ws.workshop_id
+            ORDER BY w.worker_id;
+        """
+        data = db.query(sql)
+    return {"data": data, "total": len(data)}
+
+class WorkerCreate(BaseModel):
+    worker_code: str
+    full_name: str
+    phone: Optional[str] = ""
+    workshop_id: Optional[int] = 1
+    skill_level: Optional[str] = "THO_CHINH"
+    specialty: Optional[str] = ""
+    hourly_rate: Optional[float] = 35000.0
+
+@app.post("/api/production/workers")
+def create_worker(req: WorkerCreate):
+    """Thêm công nhân xưởng mới"""
+    with DBContext() as db:
+        new_id = db.execute("""
+            INSERT INTO workers (worker_code, full_name, phone, workshop_id, skill_level, specialty, hourly_rate, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE');
+        """, (req.worker_code.strip(), req.full_name.strip(), req.phone, req.workshop_id, req.skill_level, req.specialty, req.hourly_rate))
+    return {"success": True, "message": f"Đã thêm công nhân {req.full_name}", "worker_id": new_id}
+
+@app.get("/api/production/shifts")
+def get_work_shifts():
+    """Lấy danh mục các ca làm việc"""
+    with DBContext() as db:
+        data = db.query("SELECT * FROM work_shifts ORDER BY shift_id;")
+    return {"data": data}
+
+class WorkerAssignRequest(BaseModel):
+    worker_ids: List[int]
+    shift_id: int = 1
+    planned_hours: float = 8.0
+    notes: Optional[str] = ""
+
+@app.post("/api/production/orders/{order_id}/assign-workers")
+def assign_workers_to_order(order_id: int, req: WorkerAssignRequest):
+    """Phân công công nhân và ca làm cho một lệnh sản xuất cụ thể"""
+    assigned_date = datetime.now().strftime("%Y-%m-%d")
+    with DBContext() as db:
+        order = db.query("SELECT order_id, order_code FROM production_orders WHERE order_id = %s;", (order_id,))
+        if not order:
+            raise HTTPException(status_code=404, detail="Lệnh sản xuất không tồn tại")
+        
+        assigned_cnt = 0
+        for wid in req.worker_ids:
+            db.execute("""
+                INSERT INTO production_worker_assignments 
+                (production_order_id, worker_id, shift_id, assigned_date, planned_hours, actual_hours, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s);
+            """, (order_id, wid, req.shift_id, assigned_date, req.planned_hours, req.planned_hours, req.notes))
+            assigned_cnt += 1
+            
+    return {
+        "success": True, 
+        "message": f"Đã phân công thành công {assigned_cnt} công nhân vào lệnh {order[0]['order_code']}",
+        "order_id": order_id,
+        "assigned_workers": assigned_cnt
+    }
+
+@app.get("/api/production/orders/{order_id}/workers")
+def get_order_workers(order_id: int):
+    """Xem danh sách công nhân phân công trong lệnh sản xuất"""
+    with DBContext() as db:
+        sql = """
+            SELECT pwa.*, w.worker_code, w.full_name, w.skill_level, w.specialty, ws.shift_name, ws.start_time, ws.end_time
+            FROM production_worker_assignments pwa
+            JOIN workers w ON pwa.worker_id = w.worker_id
+            LEFT JOIN work_shifts ws ON pwa.shift_id = ws.shift_id
+            WHERE pwa.production_order_id = %s
+            ORDER BY pwa.assignment_id;
+        """
+        data = db.query(sql, (order_id,))
+    return {"data": data, "total": len(data)}
+
+@app.post("/api/production/orders/{order_id}/auto-reorder-defect")
+def auto_reorder_defect(order_id: int):
+    """
+    Tự động tạo Lệnh sản xuất bù hao hụt khi tỷ lệ phế phẩm > 10% (theo đề bài):
+    Tự động tính số lượng hỏng để tạo Lệnh sản xuất bổ sung và gửi thông báo chuông.
+    """
+    with DBContext() as db:
+        orders = db.query("""
+            SELECT po.*, p.product_name 
+            FROM production_orders po
+            JOIN products p ON po.product_id = p.product_id
+            WHERE po.order_id = %s;
+        """, (order_id,))
+        if not orders:
+            raise HTTPException(status_code=404, detail="Không tìm thấy Lệnh sản xuất")
+        
+        orig = orders[0]
+        completed = int(orig.get("completed_quantity") or 0)
+        defect = int(orig.get("defect_quantity") or 0)
+        total_produced = completed + defect
+        
+        if defect <= 0:
+            raise HTTPException(status_code=400, detail="Lệnh này không ghi nhận sản phẩm lỗi/hao hụt để bù")
+        
+        defect_rate = (defect / total_produced) if total_produced > 0 else 0.0
+        
+        # Tạo mã lệnh bổ sung
+        new_code = f"PO-BU-{orig['order_code']}-{int(datetime.now().timestamp()) % 10000}"
+        new_notes = f"Lệnh sản xuất bổ sung bù hao hụt {defect} sản phẩm ({defect_rate*100:.1f}%) từ lệnh gốc {orig['order_code']}"
+        
+        new_order_id = db.execute("""
+            INSERT INTO production_orders (order_code, plan_id, workshop_id, product_id, target_quantity, status, notes)
+            VALUES (%s, %s, %s, %s, %s, 'PENDING', %s);
+        """, (new_code, orig.get("plan_id"), orig.get("workshop_id") or 1, orig["product_id"], defect, new_notes))
+        
+    # Bắn thông báo lên chuông hệ thống sau khi commit DB
+    try:
+        dispatch_n8n_webhook("system-alert", {
+            "title": f"[Sản Xuất] Kích hoạt Lệnh bù hao hụt {new_code}",
+            "message": f"Hao hụt vượt ngưỡng ({defect_rate*100:.1f}% > 10%). Đã lập lệnh SX bổ sung {defect} {orig['product_name']}.",
+            "severity": "WARNING"
+        }, "03_event_driven_alerts", "03 - Event-Driven System Alerts")
+    except Exception:
+        pass
+        
+    return {
+        "success": True,
+        "message": f"Đã tự động tạo Lệnh sản xuất bổ sung {new_code} với số lượng {defect} sản phẩm",
+        "new_order_id": new_order_id,
+        "new_order_code": new_code,
+        "defect_quantity": defect,
+        "reorder_quantity": defect,
+        "defect_rate_percent": round(defect_rate * 100, 2)
+    }
+
+
+# =============================================================================
+# API QUẢN LÝ PHÂN PHỐI ĐẠI LÝ & ĐỔI TRẢ
+# =============================================================================
+
+@app.get("/api/distribution/dealer-requests")
+def get_dealer_purchase_requests(staff_user_id: Optional[int] = None):
+    """Lấy danh sách các yêu cầu nhập hàng từ đại lý (hỗ trợ lọc theo nhân viên tiếp thị phụ trách)"""
+    with DBContext() as db:
+        if staff_user_id:
+            sql = """
+                SELECT dpr.*, c.customer_name, c.customer_code, c.phone, c.current_debt, c.credit_limit,
+                       p.product_name, p.product_code, p.unit,
+                       COALESCE((SELECT SUM(quantity_in_stock) FROM finished_goods_inventory WHERE product_id = dpr.product_id), 0) as current_stock
+                FROM dealer_purchase_requests dpr
+                JOIN customers c ON dpr.customer_id = c.customer_id
+                JOIN products p ON dpr.product_id = p.product_id
+                JOIN staff_agent_assignments saa ON dpr.customer_id = saa.customer_id
+                WHERE saa.user_id = %s
+                ORDER BY dpr.request_id DESC;
+            """
+            data = db.query(sql, (staff_user_id,))
+        else:
+            sql = """
+                SELECT dpr.*, c.customer_name, c.customer_code, c.phone, c.current_debt, c.credit_limit,
+                       p.product_name, p.product_code, p.unit,
+                       COALESCE((SELECT SUM(quantity_in_stock) FROM finished_goods_inventory WHERE product_id = dpr.product_id), 0) as current_stock
+                FROM dealer_purchase_requests dpr
+                JOIN customers c ON dpr.customer_id = c.customer_id
+                JOIN products p ON dpr.product_id = p.product_id
+                ORDER BY dpr.request_id DESC;
+            """
+            data = db.query(sql)
+    return {"data": data, "total": len(data)}
+
+class DealerRequestCreate(BaseModel):
+    customer_id: Optional[int] = None
+    agent_code: Optional[str] = None
+    product_id: int
+    quantity_requested: int
+    expected_delivery_date: Optional[str] = None
+    notes: Optional[str] = ""
+
+@app.post("/api/distribution/dealer-requests")
+def create_dealer_purchase_request(req: DealerRequestCreate):
+    """Đại lý hoặc nhân viên phân phối gửi yêu cầu nhập hàng mới"""
+    if req.quantity_requested <= 0:
+        raise HTTPException(status_code=400, detail="Số lượng yêu cầu phải lớn hơn 0")
+        
+    with DBContext() as db:
+        cust_id = req.customer_id
+        if not cust_id and req.agent_code:
+            code = req.agent_code.strip()
+            c_rows = db.query("SELECT customer_id FROM customers WHERE UPPER(customer_code) = UPPER(%s) OR phone = %s", (code, code))
+            if c_rows:
+                cust_id = c_rows[0]["customer_id"]
+            else:
+                cust_id = 1
+        elif not cust_id:
+            cust_id = 1
+
+        prod = db.query("SELECT product_name, selling_price, cost_price FROM products WHERE product_id = %s;", (req.product_id,))
+        cust = db.query("SELECT customer_name, customer_type FROM customers WHERE customer_id = %s;", (cust_id,))
+        if not prod or not cust:
+            raise HTTPException(status_code=404, detail="Sản phẩm hoặc Đại lý không tồn tại")
+            
+        unit_price = float(prod[0]["selling_price"] or 45000.0)
+        # Nếu là đại lý VIP chiết khấu sỉ
+        if cust[0]["customer_type"] == "AGENT_VIP":
+            unit_price = round(unit_price * 0.82, 0)
+            
+        import uuid
+        total_amount = unit_price * req.quantity_requested
+        req_code = f"DLR-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+        
+        new_id = db.execute("""
+            INSERT INTO dealer_purchase_requests 
+            (request_code, customer_id, product_id, quantity_requested, unit_price, total_amount, status, expected_delivery_date, notes)
+            VALUES (%s, %s, %s, %s, %s, %s, 'CHO_XU_LY', %s, %s);
+        """, (req_code, cust_id, req.product_id, req.quantity_requested, unit_price, total_amount, req.expected_delivery_date, req.notes))
+        cust_name = cust[0]['customer_name']
+        prod_name = prod[0]['product_name']
+        
+    # Bắn thông báo có yêu cầu nhập hàng mới sau khi commit DB
+    try:
+        dispatch_n8n_webhook("system-alert", {
+            "title": f"[Đại Lý] Yêu cầu nhập hàng mới {req_code}",
+            "message": f"Đại lý {cust_name} yêu cầu nhập {req.quantity_requested} {prod_name} ({total_amount:,.0f} ₫).",
+            "severity": "INFO"
+        }, "03_event_driven_alerts", "03 - Event-Driven System Alerts")
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "message": f"Đã tiếp nhận yêu cầu nhập hàng {req_code} từ đại lý",
+        "request_id": new_id,
+        "request_code": req_code,
+        "total_amount": total_amount
+    }
+
+@app.post("/api/distribution/dealer-requests/{request_id}/check-stock")
+def check_dealer_request_stock(request_id: int):
+    """Kiểm tra số lượng tồn kho thành phẩm khả dụng so với yêu cầu"""
+    with DBContext() as db:
+        reqs = db.query("SELECT * FROM dealer_purchase_requests WHERE request_id = %s;", (request_id,))
+        if not reqs:
+            raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu nhập hàng")
+        r = reqs[0]
+        
+        stock_rows = db.query("""
+            SELECT COALESCE(SUM(quantity_in_stock), 0) as total_stock 
+            FROM finished_goods_inventory 
+            WHERE product_id = %s;
+        """, (r["product_id"],))
+        
+        total_stock = int(stock_rows[0]["total_stock"] or 0)
+        qty_needed = int(r["quantity_requested"])
+        is_sufficient = (total_stock >= qty_needed)
+        deficit = max(0, qty_needed - total_stock)
+        
+    return {
+        "success": True,
+        "request_id": request_id,
+        "product_id": r["product_id"],
+        "requested_quantity": qty_needed,
+        "available_stock": total_stock,
+        "is_sufficient": is_sufficient,
+        "is_stock_sufficient": is_sufficient,
+        "deficit": deficit,
+        "deficit_quantity": deficit,
+        "recommendation": "ĐỦ TỒN KHO: Có thể duyệt xuất kho ngay" if is_sufficient else f"THIẾU {deficit} SẢN PHẨM: Đề xuất hẹn giao và chuyển Lệnh sản xuất"
+    }
+
+@app.post("/api/distribution/dealer-requests/{request_id}/approve-dispatch")
+def approve_dealer_request_dispatch(request_id: int):
+    """
+    Kịch bản 1 (Đủ tồn kho): Duyệt xuất kho thành phẩm
+    - Tự động tạo đơn hàng bán (sales_orders)
+    - Tự động tạo phiếu xuất kho (inventory_dispatches)
+    - Trừ tồn kho thành phẩm tương ứng
+    - Cập nhật trạng thái yêu cầu sang 'DU_HANG_DA_XUAT'
+    """
+    with DBContext() as db:
+        reqs = db.query("SELECT * FROM dealer_purchase_requests WHERE request_id = %s;", (request_id,))
+        if not reqs:
+            raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu")
+        r = reqs[0]
+        
+        stock_rows = db.query("SELECT COALESCE(SUM(quantity_in_stock), 0) as total_stock FROM finished_goods_inventory WHERE product_id = %s;", (r["product_id"],))
+        avail = int(stock_rows[0]["total_stock"] or 0)
+        if avail < int(r["quantity_requested"]):
+            raise HTTPException(status_code=400, detail=f"Tồn kho thành phẩm không đủ (Chỉ còn {avail}/{r['quantity_requested']})! Hãy chuyển yêu cầu sang sản xuất.")
+            
+        # 1. Tạo sales_orders
+        so_code = f"SO-DLR-{int(datetime.now().timestamp()) % 100000}"
+        so_id = db.execute("""
+            INSERT INTO sales_orders 
+            (order_code, customer_id, total_amount, discount_amount, final_amount, status, payment_method, payment_status, channel_type, notes)
+            VALUES (%s, %s, %s, 0, %s, 'DELIVERED', 'CONG_NO_DAI_LY', 'PENDING', 'DEALER_PORTAL', %s);
+        """, (so_code, r["customer_id"], r["total_amount"], r["total_amount"], f"Xuất kho tự động từ yêu cầu đại lý {r['request_code']}"))
+        
+        # 2. Tạo sales_order_details
+        db.execute("""
+            INSERT INTO sales_order_details (sales_order_id, product_id, quantity, unit_price, discount, subtotal)
+            VALUES (%s, %s, %s, %s, 0, %s);
+        """, (so_id, r["product_id"], r["quantity_requested"], r["unit_price"], r["total_amount"]))
+        
+        # 3. Tạo inventory_dispatches
+        disp_code = f"DISP-DLR-{int(datetime.now().timestamp()) % 100000}"
+        db.execute("""
+            INSERT INTO inventory_dispatches (dispatch_code, sales_order_id, created_by)
+            VALUES (%s, %s, 'phanphoi');
+        """, (disp_code, so_id))
+        
+        # 4. Trừ tồn kho
+        rem = int(r["quantity_requested"])
+        invs = db.query("SELECT inventory_id, quantity_in_stock FROM finished_goods_inventory WHERE product_id = %s AND quantity_in_stock > 0 ORDER BY expiry_date ASC;", (r["product_id"],))
+        for inv in invs:
+            ded = min(rem, int(inv["quantity_in_stock"]))
+            db.execute("UPDATE finished_goods_inventory SET quantity_in_stock = quantity_in_stock - %s WHERE inventory_id = %s;", (ded, inv["inventory_id"]))
+            rem -= ded
+            if rem <= 0:
+                break
+                
+        # 5. Cập nhật công nợ đại lý
+        db.execute("UPDATE customers SET current_debt = current_debt + %s WHERE customer_id = %s;", (r["total_amount"], r["customer_id"]))
+        
+        # 6. Cập nhật trạng thái yêu cầu
+        db.execute("""
+            UPDATE dealer_purchase_requests 
+            SET status = 'DU_HANG_DA_XUAT', sales_order_id = %s, resolved_at = CURRENT_TIMESTAMP 
+            WHERE request_id = %s;
+        """, (so_id, request_id))
+        
+    return {
+        "success": True,
+        "message": f"Duyệt xuất kho thành công! Đã tạo đơn bán hàng {so_code} và phiếu xuất {disp_code}",
+        "sales_order_id": so_id,
+        "sales_order_code": so_code,
+        "dispatch_code": disp_code
+    }
+
+class DealerRequestProductionHandoff(BaseModel):
+    expected_delivery_date: Optional[str] = None
+    promised_delivery_date: Optional[str] = None
+    notes: Optional[str] = "Chuyển yêu cầu sản xuất bổ sung do thiếu tồn kho"
+
+@app.post("/api/distribution/dealer-requests/{request_id}/request-production")
+def request_dealer_production_handoff(request_id: int, req: DealerRequestProductionHandoff):
+    """
+    Kịch bản 2 (Thiếu hàng): Bộ phận phân phối phản hồi hẹn ngày giao
+    và tự động tạo đề xuất Lệnh sản xuất gửi sang Quản đốc xưởng.
+    """
+    promised_date = req.promised_delivery_date or req.expected_delivery_date or "2026-12-05"
+    with DBContext() as db:
+        reqs = db.query("""
+            SELECT dpr.*, c.customer_name, p.product_name 
+            FROM dealer_purchase_requests dpr
+            JOIN customers c ON dpr.customer_id = c.customer_id
+            JOIN products p ON dpr.product_id = p.product_id
+            WHERE dpr.request_id = %s;
+        """, (request_id,))
+        if not reqs:
+            raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu")
+        r = reqs[0]
+        
+        # Tính tồn kho thiếu
+        stock_rows = db.query("SELECT COALESCE(SUM(quantity_in_stock), 0) as total_stock FROM finished_goods_inventory WHERE product_id = %s;", (r["product_id"],))
+        avail = int(stock_rows[0]["total_stock"] or 0)
+        deficit = max(int(r["quantity_requested"]) - avail, int(r["quantity_requested"]))
+        
+        # Tạo Lệnh sản xuất bổ sung
+        import uuid
+        po_code = f"PO-DLR-{uuid.uuid4().hex[:6].upper()}"
+        po_notes = f"Sản xuất đáp ứng đơn hàng đại lý {r['customer_name']} (Yêu cầu {r['request_code']}). Hẹn giao: {promised_date}."
+        
+        po_id = db.execute("""
+            INSERT INTO production_orders (order_code, product_id, workshop_id, target_quantity, status, notes)
+            VALUES (%s, %s, 1, %s, 'PENDING', %s);
+        """, (po_code, r["product_id"], deficit, po_notes))
+        
+        # Cập nhật yêu cầu
+        db.execute("""
+            UPDATE dealer_purchase_requests 
+            SET status = 'THIEU_HANG_CHO_SX', expected_delivery_date = %s, supplementary_prod_order_id = %s, notes = %s, resolved_at = CURRENT_TIMESTAMP
+            WHERE request_id = %s;
+        """, (promised_date, po_id, req.notes, request_id))
+        
+        cust_name = r['customer_name']
+        prod_name = r['product_name']
+
+    # Bắn thông báo sang Quản đốc sau khi commit DB
+    try:
+        dispatch_n8n_webhook("system-alert", {
+            "title": f"[Sản Xuất] Lệnh SX mới từ đơn đại lý {po_code}",
+            "message": f"Đại lý {cust_name} thiếu {deficit} {prod_name}. Đã lập lệnh SX {po_code} hẹn giao {promised_date}.",
+            "severity": "WARNING"
+        }, "03_event_driven_alerts", "03 - Event-Driven System Alerts")
+    except Exception:
+        pass
+        
+    return {
+        "success": True,
+        "message": f"Đã hẹn giao ngày {promised_date} và chuyển đề xuất tạo Lệnh sản xuất {po_code} ({deficit} sản phẩm)",
+        "production_order_id": po_id,
+        "production_order_code": po_code,
+        "expected_delivery_date": promised_date,
+        "promised_delivery_date": promised_date
+    }
+
+# --- Đổi trả hàng lỗi (Order Returns) ---
+
+@app.get("/api/distribution/returns")
+def get_order_returns(staff_user_id: Optional[int] = None):
+    """Lấy danh sách các phiếu đổi trả hàng từ đại lý (hỗ trợ lọc theo nhân viên tiếp thị phụ trách)"""
+    with DBContext() as db:
+        if staff_user_id:
+            sql = """
+                SELECT ret.*, c.customer_name, c.customer_code, p.product_name, p.product_code, so.order_code
+                FROM order_returns ret
+                JOIN customers c ON ret.customer_id = c.customer_id
+                JOIN products p ON ret.product_id = p.product_id
+                JOIN staff_agent_assignments saa ON ret.customer_id = saa.customer_id
+                LEFT JOIN sales_orders so ON ret.sales_order_id = so.sales_order_id
+                WHERE saa.user_id = %s
+                ORDER BY ret.return_id DESC;
+            """
+            data = db.query(sql, (staff_user_id,))
+        else:
+            sql = """
+                SELECT ret.*, c.customer_name, c.customer_code, p.product_name, p.product_code, so.order_code
+                FROM order_returns ret
+                JOIN customers c ON ret.customer_id = c.customer_id
+                JOIN products p ON ret.product_id = p.product_id
+                LEFT JOIN sales_orders so ON ret.sales_order_id = so.sales_order_id
+                ORDER BY ret.return_id DESC;
+            """
+            data = db.query(sql)
+    return {"data": data, "total": len(data)}
+
+# =============================================================================
+# API PHÂN QUYỀN ĐẠI LÝ CHO NHÂN VIÊN TIẾP THỊ (STAFF - AGENT ASSIGNMENTS)
+# =============================================================================
+
+@app.get("/api/distribution/marketing-staff")
+def get_marketing_staff_list():
+    """Lấy danh sách tài khoản nhân viên tiếp thị / phân phối kèm số đại lý đang phụ trách"""
+    with DBContext() as db:
+        sql = """
+            SELECT u.user_id, u.username, u.full_name, u.role, u.email,
+                   COUNT(saa.assignment_id) as assigned_agent_count
+            FROM users u
+            LEFT JOIN staff_agent_assignments saa ON u.user_id = saa.user_id
+            WHERE u.role IN ('QUAN_LY_PHAN_PHOI', 'ADMIN', 'GIAM_DOC') AND u.status = 'ACTIVE'
+            GROUP BY u.user_id, u.username, u.full_name, u.role, u.email
+            ORDER BY u.user_id;
+        """
+        data = db.query(sql)
+    return {"data": data, "total": len(data)}
+
+@app.get("/api/distribution/staff-assignments")
+def get_staff_agent_assignments(staff_user_id: Optional[int] = None):
+    """
+    Lấy danh sách phân công đại lý cho nhân viên tiếp thị:
+    Nếu có staff_user_id -> trả về danh sách chi tiết và mảng assigned_customer_ids.
+    """
+    with DBContext() as db:
+        if staff_user_id:
+            sql = """
+                SELECT saa.assignment_id, saa.user_id, saa.customer_id, saa.assigned_at, saa.notes,
+                       c.customer_name, c.customer_code, c.customer_type, c.region, c.phone, c.current_debt, c.credit_limit
+                FROM staff_agent_assignments saa
+                JOIN customers c ON saa.customer_id = c.customer_id
+                WHERE saa.user_id = %s
+                ORDER BY c.customer_id;
+            """
+            data = db.query(sql, (staff_user_id,))
+            assigned_ids = [r["customer_id"] for r in data]
+            return {
+                "staff_user_id": staff_user_id,
+                "data": data,
+                "assigned_customer_ids": assigned_ids,
+                "total": len(data)
+            }
+        else:
+            sql = """
+                SELECT saa.assignment_id, saa.user_id, saa.customer_id, saa.assigned_at, saa.notes,
+                       u.full_name as staff_name, u.username as staff_username,
+                       c.customer_name, c.customer_code, c.customer_type, c.region
+                FROM staff_agent_assignments saa
+                JOIN users u ON saa.user_id = u.user_id
+                JOIN customers c ON saa.customer_id = c.customer_id
+                ORDER BY saa.user_id, c.customer_id;
+            """
+            data = db.query(sql)
+            return {"data": data, "total": len(data)}
+
+class StaffAssignmentUpdate(BaseModel):
+    staff_user_id: int
+    customer_ids: List[int]
+    notes: Optional[str] = "Phân công phụ trách đại lý từ ban quản trị"
+
+@app.post("/api/distribution/staff-assignments")
+def update_staff_agent_assignments(req: StaffAssignmentUpdate):
+    """
+    Admin phân quyền phụ trách đại lý cho nhân viên tiếp thị:
+    Lưu danh sách đại lý được chọn cho nhân viên cụ thể.
+    """
+    with DBContext() as db:
+        # Kiểm tra nhân viên tồn tại
+        staff_rows = db.query("SELECT user_id, full_name, username, role FROM users WHERE user_id = %s;", (req.staff_user_id,))
+        if not staff_rows:
+            raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản nhân viên")
+        staff = staff_rows[0]
+
+        # Xóa các phân công cũ của nhân viên này
+        db.execute("DELETE FROM staff_agent_assignments WHERE user_id = %s;", (req.staff_user_id,))
+
+        # Thêm mới các phân công được chọn
+        added_count = 0
+        for cid in req.customer_ids:
+            try:
+                db.execute("""
+                    INSERT INTO staff_agent_assignments (user_id, customer_id, notes)
+                    VALUES (%s, %s, %s);
+                """, (req.staff_user_id, cid, req.notes or f"Phân công cho {staff['full_name']}"))
+                added_count += 1
+            except Exception:
+                pass
+
+    return {
+        "success": True,
+        "message": f"Đã cập nhật phân quyền thành công! Nhân viên {staff['full_name']} hiện phụ trách {added_count} đại lý.",
+        "staff_user_id": req.staff_user_id,
+        "assigned_count": added_count,
+        "assigned_customer_ids": req.customer_ids
+    }
+
+class OrderReturnCreate(BaseModel):
+    sales_order_id: Optional[int] = None
+    customer_id: int
+    product_id: int
+    quantity_returned: int
+    reason: str
+    resolution_type: Optional[str] = "TRU_CONG_NO" # "TRU_CONG_NO" hoặc "DOI_HANG_MOI"
+
+@app.post("/api/distribution/returns")
+def create_order_return(req: OrderReturnCreate):
+    """Tiếp nhận và xử lý phiếu đổi trả hàng lỗi từ đại lý"""
+    if req.quantity_returned <= 0:
+        raise HTTPException(status_code=400, detail="Số lượng trả phải lớn hơn 0")
+        
+    with DBContext() as db:
+        cust = db.query("SELECT customer_name FROM customers WHERE customer_id = %s;", (req.customer_id,))
+        prod = db.query("SELECT product_name, selling_price FROM products WHERE product_id = %s;", (req.product_id,))
+        if not cust or not prod:
+            raise HTTPException(status_code=404, detail="Khách hàng hoặc Sản phẩm không tồn tại")
+            
+        unit_price = float(prod[0]["selling_price"] or 45000.0)
+        amount_comp = unit_price * req.quantity_returned
+        ret_code = f"RET-{datetime.now().strftime('%Y%m%d')}-{int(datetime.now().timestamp()) % 10000}"
+        
+        # Nếu chọn cấn trừ công nợ -> trừ trực tiếp nợ khách
+        if req.resolution_type == "TRU_CONG_NO":
+            db.execute("UPDATE customers SET current_debt = MAX(0.0, current_debt - %s) WHERE customer_id = %s;", (amount_comp, req.customer_id))
+            
+        ret_id = db.execute("""
+            INSERT INTO order_returns 
+            (return_code, sales_order_id, customer_id, product_id, quantity_returned, reason, resolution_type, amount_compensated, status, notes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'DA_XU_LY', %s);
+        """, (ret_code, req.sales_order_id, req.customer_id, req.product_id, req.quantity_returned, req.reason, req.resolution_type, amount_comp, f"Đã tiếp nhận xử lý phương án: {req.resolution_type}"))
+        
+    return {
+        "success": True,
+        "message": f"Đã tiếp nhận xử lý phiếu đổi trả {ret_code} ({amount_comp:,.0f} ₫)",
+        "return_id": ret_id,
+        "return_code": ret_code,
+        "amount_compensated": amount_comp
+    }
+
+
+# =============================================================================
+# API QUẢN LÝ DANH MỤC CÁC KHO (QUẢN LÝ KHO - YÊU CẦU MỚI)
+# =============================================================================
+
+class WarehouseCreateUpdate(BaseModel):
+    warehouse_code: str
+    warehouse_name: str
+    warehouse_type: str = "KHO_THANH_PHAM" # KHO_NGUYEN_VAT_LIEU hoặc KHO_THANH_PHAM
+    manager_name: Optional[str] = ""
+    contact_phone: Optional[str] = ""
+    location: Optional[str] = ""
+    capacity: Optional[str] = ""
+    status: Optional[str] = "ACTIVE"
+
+@app.get("/api/warehouses")
+def get_warehouses():
+    """Lấy danh sách các kho (kho NVL, kho thành phẩm) kèm người đại diện & SĐT liên hệ"""
+    with DBContext() as db:
+        data = db.query("SELECT * FROM warehouses ORDER BY warehouse_id;")
+    return {"data": data, "total": len(data)}
+
+@app.post("/api/warehouses")
+def create_warehouse(req: WarehouseCreateUpdate):
+    """Đăng ký mới một kho lưu trữ"""
+    with DBContext() as db:
+        existing = db.query("SELECT warehouse_id FROM warehouses WHERE UPPER(warehouse_code) = %s;", (req.warehouse_code.strip().upper(),))
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Mã kho '{req.warehouse_code}' đã tồn tại")
+        new_id = db.execute("""
+            INSERT INTO warehouses (warehouse_code, warehouse_name, warehouse_type, manager_name, contact_phone, location, capacity, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+        """, (req.warehouse_code.strip().upper(), req.warehouse_name.strip(), req.warehouse_type, req.manager_name, req.contact_phone, req.location, req.capacity, req.status or "ACTIVE"))
+    return {"success": True, "message": f"Tạo mới kho '{req.warehouse_name}' thành công", "warehouse_id": new_id}
+
+@app.put("/api/warehouses/{warehouse_id}")
+def update_warehouse(warehouse_id: int, req: WarehouseCreateUpdate):
+    """Cập nhật thông tin kho, người đại diện, số điện thoại, sức chứa"""
+    with DBContext() as db:
+        db.execute("""
+            UPDATE warehouses
+            SET warehouse_name = %s, warehouse_type = %s, manager_name = %s, contact_phone = %s,
+                location = %s, capacity = %s, status = %s
+            WHERE warehouse_id = %s;
+        """, (req.warehouse_name.strip(), req.warehouse_type, req.manager_name, req.contact_phone, req.location, req.capacity, req.status or "ACTIVE", warehouse_id))
+    return {"success": True, "message": f"Cập nhật thông tin kho '{req.warehouse_name}' thành công"}
+
+@app.get("/api/warehouses/{warehouse_id}/transactions")
+def get_warehouse_transactions(warehouse_id: int):
+    """Lấy lịch sử các lệnh nhập kho và xuất kho liên quan đến kho này"""
+    with DBContext() as db:
+        wh = db.query("SELECT * FROM warehouses WHERE warehouse_id = %s;", (warehouse_id,))
+        if not wh:
+            raise HTTPException(status_code=404, detail="Không tìm thấy kho")
+        w = wh[0]
+        # Lấy lịch sử nhập thành phẩm
+        inbounds = db.query("""
+            SELECT fg.lot_number, p.product_name, p.product_code, fg.quantity_in_stock, fg.manufactured_date, fg.expiry_date, fg.created_at
+            FROM finished_goods_inventory fg
+            JOIN products p ON fg.product_id = p.product_id
+            ORDER BY fg.inventory_id DESC LIMIT 15;
+        """)
+        # Lấy lịch sử xuất kho
+        outbounds = db.query("""
+            SELECT d.dispatch_code, so.order_code, c.customer_name, d.dispatched_at, d.created_by
+            FROM inventory_dispatches d
+            JOIN sales_orders so ON d.sales_order_id = so.sales_order_id
+            JOIN customers c ON so.customer_id = c.customer_id
+            ORDER BY d.dispatch_id DESC LIMIT 15;
+        """)
+    return {
+        "warehouse": w,
+        "inbounds": inbounds,
+        "outbounds": outbounds
+    }
+
+
+# =============================================================================
+# API QUY TRÌNH 6 BƯỚC ĐẠI LÝ NHẬP HÀNG & ĐỔI TRẢ (MỞ RỘNG)
+# =============================================================================
+
+@app.post("/api/distribution/dealer-requests/{request_id}/forward-to-warehouse")
+def forward_dealer_request_to_warehouse(request_id: int):
+    """
+    Bước 2: Nhân viên phân phối kiểm tra kho -> Đủ hàng -> Gửi 'Lệnh yêu cầu xuất kho thành phẩm' sang Quản lý kho.
+    Trạng thái chuyển sang: CHO_KHO_XUAT
+    """
+    with DBContext() as db:
+        reqs = db.query("SELECT * FROM dealer_purchase_requests WHERE request_id = %s;", (request_id,))
+        if not reqs:
+            raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu")
+        r = reqs[0]
+
+        # Kiểm tra tồn kho
+        stock_rows = db.query("SELECT COALESCE(SUM(quantity_in_stock), 0) as total_stock FROM finished_goods_inventory WHERE product_id = %s;", (r["product_id"],))
+        avail = int(stock_rows[0]["total_stock"] or 0)
+        if avail < int(r["quantity_requested"]):
+            raise HTTPException(status_code=400, detail=f"Tồn kho thành phẩm không đủ (Chỉ còn {avail}/{r['quantity_requested']})! Vui lòng chọn nhánh Hẹn giao & Chuyển sản xuất.")
+
+        db.execute("""
+            UPDATE dealer_purchase_requests
+            SET status = 'CHO_KHO_XUAT', notes = %s
+            WHERE request_id = %s;
+        """, (f"Nhân viên phân phối đã kiểm tra đủ tồn ({avail} SP) và gửi lệnh yêu cầu xuất kho sang Quản lý kho", request_id))
+
+    return {
+        "success": True,
+        "message": f"Đã gửi Lệnh yêu cầu xuất kho cho yêu cầu {r['request_code']} sang Quản lý kho phê duyệt",
+        "status": "CHO_KHO_XUAT"
+    }
+
+@app.post("/api/distribution/dealer-requests/{request_id}/warehouse-dispatch")
+def warehouse_dispatch_dealer_request(request_id: int):
+    """
+    Bước 3 & 4: Quản lý kho kiểm tra số lượng lần 2 -> Chấp nhận & Tự động tạo 'Phiếu xuất kho cho đại lý',
+    trừ tồn kho thực tế, ghi nhận công nợ đại lý.
+    Trạng thái chuyển sang: DANG_GIAO_HANG
+    """
+    with DBContext() as db:
+        reqs = db.query("SELECT * FROM dealer_purchase_requests WHERE request_id = %s;", (request_id,))
+        if not reqs:
+            raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu")
+        r = reqs[0]
+
+        # Kiểm tra tồn kho lần 2
+        stock_rows = db.query("SELECT COALESCE(SUM(quantity_in_stock), 0) as total_stock FROM finished_goods_inventory WHERE product_id = %s;", (r["product_id"],))
+        avail = int(stock_rows[0]["total_stock"] or 0)
+        if avail < int(r["quantity_requested"]):
+            raise HTTPException(status_code=400, detail=f"Quản lý kho kiểm tra: Tồn kho hiện tại không đủ ({avail}/{r['quantity_requested']})")
+
+        # 1. Tạo sales_orders
+        so_code = f"SO-DLR-{int(datetime.now().timestamp()) % 100000}"
+        so_id = db.execute("""
+            INSERT INTO sales_orders 
+            (order_code, customer_id, total_amount, discount_amount, final_amount, status, payment_method, payment_status, channel_type, notes)
+            VALUES (%s, %s, %s, 0, %s, 'CONFIRMED', 'CONG_NO_DAI_LY', 'PENDING', 'DEALER_PORTAL', %s);
+        """, (so_code, r["customer_id"], r["total_amount"], r["total_amount"], f"Đơn hàng xuất kho tự động cho đại lý theo yêu cầu {r['request_code']}"))
+
+        # 2. Tạo sales_order_details
+        db.execute("""
+            INSERT INTO sales_order_details (sales_order_id, product_id, quantity, unit_price, discount, subtotal)
+            VALUES (%s, %s, %s, %s, 0, %s);
+        """, (so_id, r["product_id"], r["quantity_requested"], r["unit_price"], r["total_amount"]))
+
+        # 3. Tạo inventory_dispatches
+        disp_code = f"DISP-DLR-{int(datetime.now().timestamp()) % 100000}"
+        db.execute("""
+            INSERT INTO inventory_dispatches (dispatch_code, sales_order_id, created_by)
+            VALUES (%s, %s, 'kho (Thủ Kho)');
+        """, (disp_code, so_id))
+
+        # 4. Trừ tồn kho thành phẩm
+        rem = int(r["quantity_requested"])
+        invs = db.query("SELECT inventory_id, quantity_in_stock FROM finished_goods_inventory WHERE product_id = %s AND quantity_in_stock > 0 ORDER BY expiry_date ASC;", (r["product_id"],))
+        for inv in invs:
+            ded = min(rem, int(inv["quantity_in_stock"]))
+            db.execute("UPDATE finished_goods_inventory SET quantity_in_stock = quantity_in_stock - %s WHERE inventory_id = %s;", (ded, inv["inventory_id"]))
+            rem -= ded
+            if rem <= 0:
+                break
+
+        # 5. Ghi nhận công nợ cho đại lý
+        db.execute("UPDATE customers SET current_debt = current_debt + %s WHERE customer_id = %s;", (r["total_amount"], r["customer_id"]))
+
+        # 6. Cập nhật trạng thái yêu cầu
+        db.execute("""
+            UPDATE dealer_purchase_requests 
+            SET status = 'DANG_GIAO_HANG', sales_order_id = %s, dispatch_code = %s, resolved_at = CURRENT_TIMESTAMP 
+            WHERE request_id = %s;
+        """, (so_id, disp_code, request_id))
+
+    return {
+        "success": True,
+        "message": f"Thủ kho đã duyệt xuất hàng thành công! Đã tạo phiếu xuất kho {disp_code} và ghi nhận công nợ đại lý.",
+        "sales_order_id": so_id,
+        "sales_order_code": so_code,
+        "dispatch_code": disp_code,
+        "status": "DANG_GIAO_HANG"
+    }
+
+@app.post("/api/distribution/dealer-requests/{request_id}/agent-confirm-received")
+def agent_confirm_received(request_id: int):
+    """
+    Bước 5: Đại lý kiểm tra hàng đúng -> Bấm 'Xác nhận nhận hàng'.
+    Trạng thái chuyển sang: HOAN_THANH
+    """
+    with DBContext() as db:
+        reqs = db.query("SELECT * FROM dealer_purchase_requests WHERE request_id = %s;", (request_id,))
+        if not reqs:
+            raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu")
+        r = reqs[0]
+
+        db.execute("""
+            UPDATE dealer_purchase_requests
+            SET status = 'HOAN_THANH', notes = %s
+            WHERE request_id = %s;
+        """, (f"Đại lý đã kiểm tra số lượng & chất lượng hàng và bấm xác nhận nhận hàng thành công", request_id))
+
+        if r.get("sales_order_id"):
+            db.execute("UPDATE sales_orders SET status = 'DELIVERED' WHERE sales_order_id = %s;", (r["sales_order_id"],))
+
+    return {
+        "success": True,
+        "message": f"Đại lý đã xác nhận nhận hàng thành công cho yêu cầu {r['request_code']}!",
+        "status": "HOAN_THANH"
+    }
+
+class AgentReturnRequest(BaseModel):
+    reason: str
+    quantity_returned: Optional[int] = None
+
+@app.post("/api/distribution/dealer-requests/{request_id}/agent-request-return")
+def agent_request_return(request_id: int, req: AgentReturnRequest):
+    """
+    Bước 6: Đại lý kiểm tra hàng không đúng -> Gửi 'Phiếu yêu cầu trả hàng' cho nhà phân phối.
+    Hệ thống cấn trừ công nợ đại lý và hoàn trả hàng về kho.
+    """
+    with DBContext() as db:
+        reqs = db.query("SELECT * FROM dealer_purchase_requests WHERE request_id = %s;", (request_id,))
+        if not reqs:
+            raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu")
+        r = reqs[0]
+
+        qty = req.quantity_returned or int(r["quantity_requested"])
+        refund_amount = qty * float(r["unit_price"] or 45000)
+
+        # 1. Trừ công nợ đại lý
+        db.execute("UPDATE customers SET current_debt = MAX(0.0, current_debt - %s) WHERE customer_id = %s;", (refund_amount, r["customer_id"]))
+
+        # 2. Hoàn hàng về kho thành phẩm
+        invs = db.query("SELECT inventory_id FROM finished_goods_inventory WHERE product_id = %s LIMIT 1;", (r["product_id"],))
+        if invs:
+            db.execute("UPDATE finished_goods_inventory SET quantity_in_stock = quantity_in_stock + %s WHERE inventory_id = %s;", (qty, invs[0]["inventory_id"]))
+
+        # 3. Tạo order_returns
+        ret_code = f"RET-DLR-{int(datetime.now().timestamp()) % 100000}"
+        db.execute("""
+            INSERT INTO order_returns (return_code, sales_order_id, customer_id, product_id, quantity_returned, reason, resolution_type, amount_compensated, status, notes)
+            VALUES (%s, %s, %s, %s, %s, %s, 'TRU_CONG_NO', %s, 'DA_XU_LY', %s);
+        """, (ret_code, r.get("sales_order_id"), r["customer_id"], r["product_id"], qty, req.reason, refund_amount, f"Đại lý trả hàng do: {req.reason}. Đã trừ công nợ và hoàn hàng vào kho."))
+
+        # 4. Cập nhật trạng thái yêu cầu
+        db.execute("""
+            UPDATE dealer_purchase_requests
+            SET status = 'DA_HOAN_HANG', notes = %s
+            WHERE request_id = %s;
+        """, (f"Đại lý yêu cầu trả hàng ({qty} SP). Đã lập phiếu đổi trả {ret_code}, cấn trừ {refund_amount:,.0f}₫ công nợ và hoàn hàng vào kho.", request_id))
+
+    return {
+        "success": True,
+        "message": f"Đã lập phiếu trả hàng {ret_code}, cấn trừ {refund_amount:,.0f} ₫ công nợ đại lý và hoàn hàng về kho thành công!",
+        "return_code": ret_code,
+        "refund_amount": refund_amount,
+        "status": "DA_HOAN_HANG"
+    }
+
+
+# =============================================================================
+# API TỔNG KẾT SẢN LƯỢNG SẢN XUẤT THEO THÁNG (QUẢN ĐỐC SẢN XUẤT - QDSX_09)
+# =============================================================================
+
+@app.get("/api/production/monthly-summary")
+def get_production_monthly_summary():
+    """
+    Tổng kết số lượng sản phẩm sản xuất theo tháng (QDSX_09):
+    Bao gồm Tháng/Năm, Tổng lệnh SX, Tổng sản lượng hoàn thành, Tỷ lệ hao hụt trung bình.
+    """
+    with DBContext() as db:
+        sql = """
+            SELECT 
+                p.product_id,
+                p.product_name,
+                p.product_code,
+                p.unit,
+                COUNT(po.order_id) as total_orders,
+                COALESCE(SUM(po.target_quantity), 0) as total_target_qty,
+                COALESCE(SUM(po.completed_quantity), 0) as total_completed_qty,
+                ROUND(COALESCE(AVG(po.defect_rate), 0.0), 1) as avg_defect_rate,
+                COALESCE(SUM(po.total_cost), 0) as total_production_cost
+            FROM products p
+            LEFT JOIN production_orders po ON p.product_id = po.product_id
+            GROUP BY p.product_id, p.product_name, p.product_code, p.unit
+            ORDER BY p.product_id;
+        """
+        rows = db.query(sql)
+
+        # Mock tổng kết theo 3 tháng gần nhất phục vụ báo cáo xu hướng
+        monthly_breakdown = [
+            {"month": "Tháng 09/2026", "total_orders": 8, "total_output": 4200, "avg_defect_pct": 2.1, "status": "HOÀN TẤT KẾ HOẠCH"},
+            {"month": "Tháng 10/2026", "total_orders": 12, "total_output": 6800, "avg_defect_pct": 1.8, "status": "HOÀN TẤT KẾ HOẠCH"},
+            {"month": "Tháng 11/2026 (Hiện tại)", "total_orders": 15, "total_output": 9500, "avg_defect_pct": 2.4, "status": "ĐANG CAO ĐIỂM TẾT"},
+        ]
+
+    return {
+        "data": rows,
+        "monthly_breakdown": monthly_breakdown,
+        "total_products": len(rows)
+    }
+
+
+@app.get("/api/inventory/report/export")
+def get_inventory_export_report():
+    """Lấy dữ liệu báo cáo tồn kho tổng hợp chi tiết sẵn sàng in/PDF"""
+    with DBContext() as db:
+        # Tồn kho nguyên vật liệu
+        materials = db.query("""
+            SELECT material_code, material_name, unit, current_stock, unit_cost, min_stock_level,
+                   ROUND(current_stock * unit_cost, 2) as total_value,
+                   CASE WHEN current_stock < min_stock_level THEN 'CANH_BAO_THIEU' ELSE 'AN_TOAN' END as stock_status
+            FROM materials ORDER BY material_id;
+        """)
+        # Tồn kho thành phẩm
+        finished_goods = db.query("""
+            SELECT fg.lot_number, p.product_code, p.product_name, p.unit, p.selling_price, p.cost_price,
+                   fg.quantity_in_stock, fg.manufactured_date, fg.expiry_date, fg.warehouse_location,
+                   ROUND(fg.quantity_in_stock * p.selling_price, 2) as retail_value,
+                   ROUND(fg.quantity_in_stock * p.cost_price, 2) as cogs_value
+            FROM finished_goods_inventory fg
+            JOIN products p ON fg.product_id = p.product_id
+            WHERE fg.quantity_in_stock > 0
+            ORDER BY fg.expiry_date ASC;
+        """)
+        
+        tot_mat_val = sum(float(m.get("total_value") or 0) for m in materials)
+        tot_fg_val = sum(float(f.get("retail_value") or 0) for f in finished_goods)
+        
+    return {
+        "report_title": "BÁO CÁO NHẬP - XUẤT - TỒN KHO TOÀN HỆ THỐNG",
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "company_name": "DOANH NGHIỆP YẾN SÀO KHÁNH HÒA & CÀ PHÊ CẦU ĐẤT",
+        "summary": {
+            "total_material_items": len(materials),
+            "total_material_value_vnd": tot_mat_val,
+            "total_finished_goods_lots": len(finished_goods),
+            "total_finished_goods_value_vnd": tot_fg_val
+        },
+        "materials": materials,
+        "finished_goods": finished_goods
+    }
+
+class DevSwitchRoleRequest(BaseModel):
+    target_role: str # 'ADMIN', 'GIAM_DOC', 'QUAN_LY_KHO', 'QUAN_DOC_SAN_XUAT', 'QUAN_LY_PHAN_PHOI', 'DAI_LY'
+
+@app.post("/api/auth/dev-switch-role")
+def dev_switch_role(req: DevSwitchRoleRequest):
+    """
+    Nút giả lập vai trò dành cho Admin (Dev Mode):
+    Chuyển đổi tức thì sang danh tính người dùng đại diện của vai trò mục tiêu.
+    """
+    role_user_map = {
+        "ADMIN": "admin",
+        "GIAM_DOC": "giamdoc",
+        "QUAN_LY_KHO": "kho",
+        "WAREHOUSE_MANAGER": "kho",
+        "QUAN_DOC_SAN_XUAT": "sanxuat",
+        "PRODUCTION_STAFF": "sanxuat",
+        "QUAN_LY_PHAN_PHOI": "phanphoi",
+        "PROCUREMENT": "thumua",
+        "DAI_LY": "daily1"
+    }
+    target_user = role_user_map.get(req.target_role.upper(), "admin")
+    with DBContext() as db:
+        users = db.query("SELECT user_id, username, full_name, role, email FROM users WHERE LOWER(username) = %s;", (target_user.lower(),))
+        if not users:
+            raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản giả lập tương ứng")
+        u = users[0]
+        token = f"token_{u['role']}_{u['user_id']}_{u['username']}"
+        
+    return {
+        "success": True,
+        "message": f"Dev Mode: Đã chuyển đổi vai trò thành công sang [{u['role']}] - {u['full_name']}",
+        "token": token,
+        "user": u
+    }
+
+
+# =============================================================================
 # 12. UNIFIED SINGLE-PORT SPA SERVING (DÀNH CHO CLOUDFLARE TUNNEL & PRODUCTION)
 # =============================================================================
 _assets_dir = os.path.join(FRONTEND_DIST_DIR, "assets")
@@ -3496,12 +5458,22 @@ if os.path.isdir(_assets_dir):
 def serve_spa_catchall(spa_path: str):
     if spa_path.startswith("api/"):
         raise HTTPException(status_code=404, detail=f"API endpoint '/{spa_path}' không tồn tại")
+
+    # Kiểm tra các tệp tĩnh (assets, js, css, images, icons, font...)
+    # Nếu tệp tĩnh không tồn tại, trả về 404 thay vì trả về index.html để tránh lỗi MIME type script
+    is_static_asset = (
+        spa_path.startswith("assets/")
+        or any(spa_path.endswith(ext) for ext in [".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2", ".json", ".map"])
+    )
     candidate = os.path.join(FRONTEND_DIST_DIR, spa_path)
     if os.path.isfile(candidate):
         return FileResponse(candidate)
+    elif is_static_asset:
+        raise HTTPException(status_code=404, detail=f"Tài nguyên tĩnh '/{spa_path}' không tồn tại")
+
     index_file = os.path.join(FRONTEND_DIST_DIR, "index.html")
     if os.path.isfile(index_file):
-        return FileResponse(index_file)
+        return FileResponse(index_file, headers=SPA_NO_CACHE_HEADERS)
     return api_health()
 
 

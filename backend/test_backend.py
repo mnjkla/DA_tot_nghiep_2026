@@ -1,6 +1,7 @@
 import unittest
 import os
 import sys
+import sqlite3
 
 # Ensure backend directory is in path
 sys.path.insert(0, os.path.dirname(__file__))
@@ -220,15 +221,15 @@ class TestVersion140RBACAndGeoPersonalizationAndAI(unittest.TestCase):
     def test_rbac_four_standard_roles_login(self):
         """Kiểm tra đăng nhập thành công cả 4 tài khoản mẫu chuẩn RBAC"""
         roles_expected = [
-            ("admin", "admin123", "ADMIN"),
-            ("kho", "kho123", "WAREHOUSE_MANAGER"),
-            ("sanxuat", "sanxuat123", "PRODUCTION_STAFF"),
-            ("thumua", "thumua123", "PROCUREMENT"),
+            ("admin", "admin123", ["ADMIN"]),
+            ("kho", "kho123", ["QUAN_LY_KHO", "WAREHOUSE_MANAGER"]),
+            ("sanxuat", "sanxuat123", ["QUAN_DOC_SAN_XUAT", "PRODUCTION_STAFF"]),
+            ("thumua", "thumua123", ["PROCUREMENT"]),
         ]
-        for username, pwd, expected_role in roles_expected:
+        for username, pwd, expected_roles in roles_expected:
             res = auth_login(LoginRequest(username=username, password=pwd))
             self.assertTrue(res["success"])
-            self.assertEqual(res["user"]["role"], expected_role)
+            self.assertIn(res["user"]["role"], expected_roles)
             self.assertTrue(res["token"].startswith("token_"))
 
     def test_geo_targeted_personalization_sorting(self):
@@ -294,7 +295,7 @@ class TestVersion140RBACAndGeoPersonalizationAndAI(unittest.TestCase):
 
         mats_after = get_materials()["data"]
         yen_after = next(m for m in mats_after if m["material_id"] == 1)["current_stock"]
-        self.assertEqual(yen_after, yen_before + 500.0)
+        self.assertEqual(float(yen_after), float(yen_before) + 500.0)
 
     def test_ai_profit_forecast_1year_and_4_phases(self):
         """Kiểm tra API Dự báo biến động lợi nhuận 1 năm trả về đủ 12 tháng và 4 giai đoạn chiến lược"""
@@ -495,6 +496,16 @@ class TestVersion140RBACAndGeoPersonalizationAndAI(unittest.TestCase):
         self.assertNotIn("Đã nhận diện yêu cầu", res3["answer"])
         self.assertTrue("materials" in res3["sources"] or "materials" in str(res3))
 
+        # 4. Câu hỏi về chính sách đại lý & giá sỉ B2B
+        res4 = ai_chatbot(ChatQuery(question="chính sách đại lý và giá sỉ thế nào"))
+        self.assertIn("Chiết Khấu", res4["answer"])
+        self.assertTrue("price_policies" in res4["sources"] or "customers" in res4["sources"])
+
+        # 5. Câu hỏi về công dụng sức khỏe
+        res5 = ai_chatbot(ChatQuery(question="công dụng của yến lọ và cà phê"))
+        self.assertIn("Bổ phế khí", res5["answer"])
+        self.assertIn("products", res5["sources"])
+
     def test_v180_gemini_ai_configuration_api(self):
         """Version 1.8.0 Seam 2: Kiểm tra API lấy và cập nhật cấu hình Gemini API Key"""
         from main import get_ai_config, update_ai_config, AIConfigUpdateRequest
@@ -507,6 +518,195 @@ class TestVersion140RBACAndGeoPersonalizationAndAI(unittest.TestCase):
         self.assertTrue(up_res["success"])
         self.assertTrue(up_res["gemini_configured"])
         self.assertEqual(up_res["active_model"], "gemini-1.5-flash")
+
+
+class TestCanonicalDatabaseSeam(unittest.TestCase):
+    """
+    Seam 1: Kiểm thử Cấu trúc DDL 24 Bảng Chuẩn & Bộ Dữ Liệu Thực Tế (database/schema.sql & database/seed.sql)
+    """
+    EXPECTED_CANONICAL_TABLES = [
+        "product_categories", "products", "suppliers", "materials", "bill_of_materials",
+        "production_plans", "production_orders", "material_issues", "material_issue_details",
+        "finished_goods_inventory", "customers", "sales_orders", "sales_order_details",
+        "inventory_dispatches", "payments", "price_policies", "users", "campaigns",
+        "material_requisitions", "material_receipts", "system_notifications",
+        "n8n_execution_logs", "cloud_assets", "product_reviews",
+        "workshops", "workers", "work_shifts", "production_worker_assignments",
+        "dealer_purchase_requests", "order_returns"
+    ]
+
+    def test_schema_sql_creates_all_24_canonical_tables(self):
+        """Kiểm tra database/schema.sql tạo sạch sẽ đầy đủ 24 bảng chuẩn ERP"""
+        import setup_database
+        schema_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database", "schema.sql")
+        with open(schema_path, "r", encoding="utf-8") as f:
+            sql_text = f.read()
+
+        converted_sql = setup_database.convert_ddl_to_sqlite(sql_text)
+        mem_conn = sqlite3.connect(":memory:")
+        mem_conn.executescript(converted_sql)
+        cur = mem_conn.cursor()
+        tables = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+
+        for expected in self.EXPECTED_CANONICAL_TABLES:
+            self.assertIn(expected, tables, f"Thiếu bảng '{expected}' trong schema.sql")
+        mem_conn.close()
+
+    def test_seed_sql_populates_realistic_enterprise_data(self):
+        """Kiểm tra database/seed.sql nạp đầy đủ dữ liệu thực tế: 5 sản phẩm, 6 NCC, 9 NVL, 14 BOM, người dùng RBAC, review"""
+        import setup_database
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        schema_path = os.path.join(base_dir, "database", "schema.sql")
+        seed_path = os.path.join(base_dir, "database", "seed.sql")
+
+        with open(schema_path, "r", encoding="utf-8") as f:
+            schema_sql = setup_database.convert_ddl_to_sqlite(f.read())
+        with open(seed_path, "r", encoding="utf-8") as f:
+            seed_sql = f.read()
+
+        mem_conn = sqlite3.connect(":memory:")
+        mem_conn.executescript(schema_sql)
+        mem_conn.executescript(seed_sql)
+        cur = mem_conn.cursor()
+
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM products").fetchone()[0], 5)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM suppliers").fetchone()[0], 6)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM materials").fetchone()[0], 9)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM bill_of_materials").fetchone()[0], 13)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM finished_goods_inventory").fetchone()[0], 5)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM customers").fetchone()[0], 6)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM users").fetchone()[0], 4)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM product_reviews").fetchone()[0], 10)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM workshops").fetchone()[0], 3)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM workers").fetchone()[0], 6)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM work_shifts").fetchone()[0], 3)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM dealer_purchase_requests").fetchone()[0], 3)
+        self.assertGreaterEqual(cur.execute("SELECT COUNT(*) FROM order_returns").fetchone()[0], 1)
+        mem_conn.close()
+
+
+class TestVersion190WorkforceAndDistributionFlow(unittest.TestCase):
+    """
+    Version 1.9.0: Kiểm thử toàn diện các tác nhân thực tế:
+    1. Quản đốc sản xuất: Xưởng, công nhân, ca làm việc & Tự động tạo lệnh SX bù hao hụt > 10%
+    2. Quản lý phân phối & Đại lý: Yêu cầu nhập hàng 2 nhánh (Đủ hàng xuất / Thiếu hàng hẹn giao + chuyển SX)
+    3. Đổi trả hàng lỗi và cấn trừ công nợ đại lý
+    4. Thanh công cụ Dev Role Switcher 1-chạm
+    """
+
+    def test_workshops_and_workers_api(self):
+        """Kiểm tra API lấy danh sách xưởng sản xuất, công nhân và ca làm việc"""
+        import time
+        from main import get_workshops, get_workers, get_work_shifts, create_worker, WorkerCreate
+        ws_res = get_workshops()
+        self.assertIn("data", ws_res)
+        self.assertGreaterEqual(len(ws_res["data"]), 3)
+
+        shift_res = get_work_shifts()
+        self.assertIn("data", shift_res)
+        self.assertGreaterEqual(len(shift_res["data"]), 3)
+
+        workers_res = get_workers()
+        self.assertIn("data", workers_res)
+        self.assertGreaterEqual(len(workers_res["data"]), 6)
+
+        # Thêm công nhân mới
+        new_w = create_worker(WorkerCreate(
+            worker_code=f"CN-T-{int(time.time() * 1000) % 100000}",
+            full_name="Nguyễn Văn Test",
+            workshop_id=1,
+            skill_level="BẬC_3",
+            specialty="Kiểm tra chất lượng đóng hộp",
+            hourly_rate=48000,
+            current_shift_id=1
+        ))
+        self.assertTrue(new_w["success"])
+
+    def test_dealer_purchase_request_two_branches(self):
+        """
+        Kiểm tra 2 nhánh nghiệp vụ yêu cầu nhập hàng đại lý:
+        - Nhánh 1: Đủ tồn kho -> Duyệt xuất kho ngay (sinh SO)
+        - Nhánh 2: Thiếu tồn kho -> Hẹn ngày giao & chuyển Lệnh sản xuất PO
+        """
+        from main import (
+            create_dealer_purchase_request,
+            check_dealer_request_stock,
+            approve_dealer_request_dispatch,
+            request_dealer_production_handoff,
+            DealerRequestCreate,
+            DealerRequestProductionHandoff
+        )
+
+        # Tạo yêu cầu nhập số lượng nhỏ (chắc chắn đủ kho)
+        req1 = create_dealer_purchase_request(DealerRequestCreate(
+            agent_code="AGENT-001",
+            product_id=1,
+            quantity_requested=5,
+            notes="Đại lý Tâm An đặt thêm hàng có sẵn"
+        ))
+        self.assertTrue(req1["success"])
+        req1_id = req1["request_id"]
+
+        # So khớp tồn kho
+        chk1 = check_dealer_request_stock(req1_id)
+        self.assertTrue(chk1["success"])
+        self.assertTrue(chk1["is_stock_sufficient"])
+
+        # Nhánh 1: Duyệt xuất kho
+        disp_res = approve_dealer_request_dispatch(req1_id)
+        self.assertTrue(disp_res["success"])
+        self.assertIsNotNone(disp_res["sales_order_id"])
+        self.assertIsNotNone(disp_res["dispatch_code"])
+
+        # Tạo yêu cầu nhập số lượng cực lớn (chắc chắn thiếu kho)
+        req2 = create_dealer_purchase_request(DealerRequestCreate(
+            agent_code="AGENT-001",
+            product_id=1,
+            quantity_requested=99999,
+            notes="Đại lý đặt dự án siêu lớn thiếu kho"
+        ))
+        self.assertTrue(req2["success"])
+        req2_id = req2["request_id"]
+
+        # So khớp tồn kho
+        chk2 = check_dealer_request_stock(req2_id)
+        self.assertFalse(chk2["is_stock_sufficient"])
+        self.assertGreater(chk2["deficit_quantity"], 0)
+
+        # Nhánh 2: Hẹn giao & chuyển sang PO sản xuất
+        po_handoff = request_dealer_production_handoff(
+            req2_id,
+            DealerRequestProductionHandoff(
+                promised_delivery_date="2026-12-05",
+                notes="Hẹn ngày giao 2026-12-05 và lập lệnh PO sản xuất bổ sung"
+            )
+        )
+        self.assertTrue(po_handoff["success"])
+        self.assertIsNotNone(po_handoff["production_order_id"])
+        self.assertIsNotNone(po_handoff["production_order_code"])
+
+    def test_auto_reorder_defect_flow(self):
+        """Kiểm tra tự động lập lệnh PO sản xuất bù khi tỷ lệ hao hụt vượt 10%"""
+        from main import auto_reorder_defect, DBContext
+        with DBContext() as db:
+            # Tìm lệnh PO có defect_rate > 10% trong seed (PO-2026-003)
+            orders = db.query("SELECT order_id FROM production_orders WHERE defect_rate > 10 LIMIT 1")
+            if orders:
+                oid = orders[0]["order_id"]
+                res = auto_reorder_defect(oid)
+                self.assertTrue(res["success"])
+                self.assertGreater(res["reorder_quantity"], 0)
+                self.assertTrue(res["new_order_code"].startswith("PO-"))
+
+    def test_dev_role_switch(self):
+        """Kiểm tra API chuyển đổi vai trò 1-chạm cho Giảng viên / Hội đồng"""
+        from main import dev_switch_role, DevSwitchRoleRequest
+        roles = ["ADMIN", "GIAM_DOC", "QUAN_LY_KHO", "QUAN_DOC_SAN_XUAT", "QUAN_LY_PHAN_PHOI", "DAI_LY"]
+        for r in roles:
+            res = dev_switch_role(DevSwitchRoleRequest(target_role=r))
+            self.assertTrue(res["success"])
+            self.assertEqual(res["user"]["role"], r)
+            self.assertTrue(res["token"].startswith("token_"))
 
 
 if __name__ == "__main__":

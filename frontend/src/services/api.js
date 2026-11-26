@@ -228,5 +228,160 @@ export const api = {
         total_requests: totalRequests,
       }),
     }),
+
+  // 9. Version 1.9.0: Xưởng Sản Xuất, Công Nhân & Phân Phối Đại Lý Thực Dụng
+  getWorkshops: () => request('/api/production/workshops'),
+  createWorkshop: (data) =>
+    request('/api/production/workshops', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getWorkers: (workshopId = null) =>
+    request('/api/production/workers' + (workshopId ? `?workshop_id=${workshopId}` : '')),
+  createWorker: (data) =>
+    request('/api/production/workers', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getWorkShifts: () => request('/api/production/shifts'),
+  assignWorkersToOrder: (orderId, data) =>
+    request(`/api/production/orders/${orderId}/assign-workers`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getOrderWorkers: (orderId) => request(`/api/production/orders/${orderId}/workers`),
+  autoReorderDefect: (orderId) =>
+    request(`/api/production/orders/${orderId}/auto-reorder-defect`, {
+      method: 'POST',
+    }),
+  getDealerRequests: () => request('/api/distribution/dealer-requests'),
+  createDealerRequest: (data) =>
+    request('/api/distribution/dealer-requests', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  checkDealerRequestStock: (requestId) =>
+    request(`/api/distribution/dealer-requests/${requestId}/check-stock`, {
+      method: 'POST',
+    }),
+  approveDealerRequestDispatch: (requestId) =>
+    request(`/api/distribution/dealer-requests/${requestId}/approve-dispatch`, {
+      method: 'POST',
+    }),
+  requestDealerProductionHandoff: (requestId, data = {}) =>
+    request(`/api/distribution/dealer-requests/${requestId}/request-production`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getOrderReturns: () => request('/api/distribution/returns'),
+  createOrderReturn: (data) =>
+    request('/api/distribution/returns', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getInventoryExportReport: () => request('/api/inventory/report/export'),
+  devSwitchRole: (targetRole) =>
+    request('/api/auth/dev-switch-role', {
+      method: 'POST',
+      body: JSON.stringify({ target_role: targetRole }),
+    }),
+
+  // 10. Version 2.0.0: Mở rộng 3 tác nhân Giám Đốc, Kho & Quản Đốc Sản Xuất
+  getSuppliers: (q = '', status = '') => {
+    const params = new URLSearchParams()
+    if (q) params.set('q', q)
+    if (status) params.set('status', status)
+    const qs = params.toString()
+    return request('/api/suppliers' + (qs ? `?${qs}` : ''))
+  },
+  createSupplier: (data) =>
+    request('/api/suppliers', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateSupplier: (id, data) =>
+    request(`/api/suppliers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteSupplier: (id) =>
+    request(`/api/suppliers/${id}`, {
+      method: 'DELETE',
+    }),
+  updateWorkshop: (id, data) =>
+    request(`/api/production/workshops/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  getWorkshopHistory: (id) =>
+    request(`/api/production/workshops/${id}/history`),
+  updateBOM: (productId, data) =>
+    request(`/api/bom/${productId}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getProductionOrderDetails: (id) =>
+    request(`/api/production-orders/${id}/details`),
+  getPendingFinishedGoods: () =>
+    request('/api/inventory/pending-finished-goods'),
+  receiveFinishedGoods: (data) =>
+    request('/api/inventory/receive-finished-goods', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getCustomerFinancials: (startDate = '', endDate = '') => {
+    const qs = startDate && endDate ? `?start_date=${startDate}&end_date=${endDate}` : ''
+    return request(`/api/bi/customer-financials${qs}`)
+  },
+  getStockDemandForecast: () =>
+    request('/api/bi/stock-demand-forecast'),
+  // PP_01: Chuyển đổi trạng thái kinh doanh Đang bán / Ngừng bán
+  updateProductSellingStatus: (productId, isSelling) =>
+    request(`/api/products/${productId}/selling-status`, {
+      method: 'PUT',
+      body: JSON.stringify({ is_selling: isSelling }),
+    }),
+  // PP_03: Chỉnh sửa thông tin hồ sơ và hạn mức công nợ khách hàng
+  updateCustomer: (customerId, data) =>
+    request(`/api/customers/${customerId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  // Quản lý kho: Danh mục kho
+  getWarehouses: () =>
+    request('/api/warehouses'),
+  createWarehouse: (data) =>
+    request('/api/warehouses', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateWarehouse: (id, data) =>
+    request(`/api/warehouses/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  getWarehouseTransactions: (id) =>
+    request(`/api/warehouses/${id}/transactions`),
+  // Quy trình 6 bước Đại lý:
+  forwardDealerRequestToWarehouse: (id) =>
+    request(`/api/distribution/dealer-requests/${id}/forward-to-warehouse`, {
+      method: 'POST',
+    }),
+  warehouseDispatchDealerRequest: (id) =>
+    request(`/api/distribution/dealer-requests/${id}/warehouse-dispatch`, {
+      method: 'POST',
+    }),
+  agentConfirmReceived: (id) =>
+    request(`/api/distribution/dealer-requests/${id}/agent-confirm-received`, {
+      method: 'POST',
+    }),
+  agentRequestReturn: (id, data) =>
+    request(`/api/distribution/dealer-requests/${id}/agent-request-return`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  // QDSX_09: Tổng kết sản lượng sản xuất theo tháng
+  getProductionMonthlySummary: () =>
+    request('/api/production/monthly-summary'),
 }
 

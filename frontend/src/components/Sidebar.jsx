@@ -13,14 +13,21 @@ import {
 } from 'lucide-react'
 
 export default function Sidebar({ currentUser }) {
+  const isWarehouseRole = currentUser?.role === 'QUAN_LY_KHO' || currentUser?.role === 'WAREHOUSE_MANAGER'
+
   const allNavItems = [
-    { to: '/', label: 'Tổng quan BI', icon: LayoutDashboard, roles: ['ADMIN'] },
-    { to: '/production', label: 'Sản xuất', icon: Factory, roles: ['ADMIN', 'PRODUCTION_STAFF', 'WAREHOUSE_MANAGER'] },
-    { to: '/bom', label: 'Định mức BOM', icon: Layers, roles: ['ADMIN', 'PRODUCTION_STAFF', 'PROCUREMENT'] },
-    { to: '/sales', label: 'Bán hàng & Đơn', icon: ShoppingCart, roles: ['ADMIN', 'WAREHOUSE_MANAGER'] },
-    { to: '/inventory', label: 'Kho hàng & Thu mua', icon: Warehouse, roles: ['ADMIN', 'WAREHOUSE_MANAGER', 'PROCUREMENT'] },
-    { to: '/customers', label: 'Khách hàng', icon: Users, roles: ['ADMIN'] },
-    { to: '/campaigns', label: 'Chiến Dịch & CMS', icon: Megaphone, roles: ['ADMIN'], badge: 'CMS' },
+    { to: '/', label: 'Tổng quan BI', icon: LayoutDashboard, roles: ['ADMIN', 'GIAM_DOC'] },
+    { to: '/production', label: 'Sản xuất & Xưởng', icon: Factory, roles: ['ADMIN', 'GIAM_DOC', 'PRODUCTION_STAFF', 'QUAN_DOC_SAN_XUAT', 'WAREHOUSE_MANAGER', 'QUAN_LY_KHO'] },
+    { to: '/bom', label: 'Định mức BOM', icon: Layers, roles: ['ADMIN', 'GIAM_DOC', 'PRODUCTION_STAFF', 'QUAN_DOC_SAN_XUAT', 'PROCUREMENT'] },
+    {
+      to: '/sales',
+      label: isWarehouseRole ? 'Xuất Kho & Đổi Trả' : 'Bán hàng & Đơn',
+      icon: ShoppingCart,
+      roles: ['ADMIN', 'GIAM_DOC', 'WAREHOUSE_MANAGER', 'QUAN_LY_KHO', 'QUAN_LY_PHAN_PHOI', 'DAI_LY'],
+    },
+    { to: '/inventory', label: 'Kho hàng & Thu mua', icon: Warehouse, roles: ['ADMIN', 'GIAM_DOC', 'WAREHOUSE_MANAGER', 'QUAN_LY_KHO', 'PROCUREMENT'] },
+    { to: '/customers', label: 'Khách hàng', icon: Users, roles: ['ADMIN', 'GIAM_DOC', 'QUAN_LY_PHAN_PHOI'] },
+    { to: '/campaigns', label: 'Chiến Dịch & CMS', icon: Megaphone, roles: ['ADMIN', 'GIAM_DOC'], badge: 'CMS' },
     { to: '/store', label: 'Cổng Bán Hàng', icon: Store, badge: 'Sỉ & Lẻ' },
   ]
 

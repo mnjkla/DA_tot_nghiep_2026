@@ -3,6 +3,7 @@
 :root {
   /* Slate & Emerald Premium Palette */
   --bg-main: #0b1120;
+  --bg-body: #0b1120;
   --bg-sidebar: #0f172a;
   --bg-card: #1e293b;
   --bg-card-hover: #24344d;

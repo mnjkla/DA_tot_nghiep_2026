@@ -148,6 +148,8 @@ def semantic_erp_fallback(question: str, context: Dict[str, Any]) -> Dict[str, A
     rev_keywords = ["doanh thu", "bán chạy", "doanh số", "tiền bán", "thu nhập", "lợi nhuận"]
     prod_keywords = ["lệnh sản xuất", "đang sản xuất", "sản xuất gì", "tiến độ sản xuất", "nhà máy đang làm"]
     bom_keywords = ["định mức", "bom", "công thức", "nguyên liệu cần để làm", "cách làm"]
+    b2b_keywords = ["chính sách đại lý", "giá sỉ", "chiết khấu", "moq", "mua buôn", "b2b", "đại lý"]
+    health_keywords = ["công dụng", "tác dụng", "sức khỏe", "cách dùng", "uống lúc nào", "bổ gì", "hướng dẫn"]
 
     # 1. Tra cứu tồn kho thành phẩm
     if any(k in q for k in fg_keywords) or ("kho" in q and ("có" in q or "tồn" in q or "còn" in q)):
@@ -185,7 +187,37 @@ def semantic_erp_fallback(question: str, context: Dict[str, Any]) -> Dict[str, A
             "model_used": "Semantic RAG Engine (Local CSDL Grounding)"
         }
 
-    # 3. Phân tích doanh thu & bán chạy
+    # 3. Tra cứu chính sách sỉ & đại lý B2B
+    if any(k in q for k in b2b_keywords):
+        reply = (
+            f"🤝 **Chính Sách Chiết Khấu Sỉ & Hợp Tác Đại Lý B2B:**\n"
+            f"• **Chiết Khấu Mua Sỉ Theo MOQ Thùng:** Khách hàng mua nguyên thùng (24 lọ yến, 12 lốc chai, 48 lon nước yến) được áp dụng giá sỉ giảm từ **10% – 18%** trực tiếp trên hóa đơn.\n"
+            f"• **Đại Lý Chính Thức (Agent VIP):** Hưởng bảng giá VIP cao nhất (giảm đến **22%**), được cấp hạn mức công nợ gối đầu 30 ngày (tối đa 50 - 300 triệu đồng tùy hạn mức tín dụng).\n"
+            f"• **Chính Sách Giao Hàng:** Miễn phí vận chuyển toàn quốc cho đơn sỉ từ 2 thùng trở lên, đổi trả 1-1 trong 7 ngày nếu lỗi tem niêm phong nhà máy."
+        )
+        return {
+            "answer": reply,
+            "sources": ["price_policies", "customers"],
+            "model_used": "Semantic RAG Engine (Local CSDL Grounding)"
+        }
+
+    # 4. Tư vấn công dụng sức khỏe & cách dùng
+    if any(k in q for k in health_keywords):
+        reply = (
+            f"🌿 **Cẩm Nang Sức Khỏe & Công Dụng Yến Sào - Cà Phê Đặc Sản:**\n"
+            f"• **Yến Lọ Chưng Đường Phèn (70ml):** Bổ phế khí, tái tạo sức đề kháng, phục hồi thể lực sau ốm dậy. Dùng tốt nhất lúc sáng sớm trước khi ăn hoặc tối trước khi ngủ 30 phút.\n"
+            f"• **Yến Chai Nguyên Chất (150ml):** Đậm đặc 18% tổ yến tươi, giàu collagen tự nhiên giúp chống lão hóa, da dẻ hồng hào.\n"
+            f"• **Nước Yến Lon (190ml):** Giải khát thanh nhiệt, tiện lợi uống lạnh sau khi chơi thể thao hoặc làm việc ngoài trời.\n"
+            f"• **Cháo Yến Thịt Bằm (50g):** Gạo ST25 thăng hoa kết hợp yến sào thật, chỉ cần 3 phút nước sôi là có bữa sáng ấm bụng đầy đủ vi chất.\n"
+            f"• **Cà Phê Phin Giấy Cầu Đất (15g):** 100% hạt Arabica & Robusta rang mộc, ủ 30 giây với nước 92°C cho hương thơm nồng nàn không say bốc."
+        )
+        return {
+            "answer": reply,
+            "sources": ["products"],
+            "model_used": "Semantic RAG Engine (Local CSDL Grounding)"
+        }
+
+    # 5. Phân tích doanh thu & bán chạy
     if any(k in q for k in rev_keywords):
         top_prod = context["finished_goods"][0]["product_name"] if context["finished_goods"] else "Yến Lọ Chưng Đường Phèn 70ml"
         reply = (
@@ -258,26 +290,30 @@ def ask_erp_copilot(question: str, db) -> Dict[str, Any]:
         # Chuẩn bị system prompt và context grounding
         context_str = json.dumps({
             "finished_goods_inventory": [
-                {"product": s["product_name"], "stock": s["total_qty"], "unit": s["unit"], "price_vnd": s["selling_price"]}
+                {"product": s["product_name"], "stock": float(s["total_qty"] or 0), "unit": s["unit"], "price_vnd": float(s["selling_price"] or 0)}
                 for s in context["finished_goods"]
             ],
             "materials_inventory": [
-                {"material": m["material_name"], "stock": m["current_stock"], "unit": m["unit"]}
+                {"material": m["material_name"], "stock": float(m["current_stock"] or 0), "unit": m["unit"]}
                 for m in context["materials"]
             ],
             "active_production_orders": context["production_orders"],
-            "total_revenue_vnd": context["total_revenue"],
-        }, ensure_ascii=False)
+            "total_revenue_vnd": float(context["total_revenue"] or 0),
+        }, ensure_ascii=False, default=str)
 
         system_instruction = (
             "Bạn là Trợ lý AI ERP kiêm Giám đốc Vận hành thông minh của Doanh nghiệp Yến Sào Khánh Hòa & Cà Phê Cầu Đất. "
             "Dưới đây là DỮ LIỆU CSDL THỜI GIAN THỰC (RAG GROUNDING) từ hệ thống ERP:\n"
             f"{context_str}\n\n"
+            "KIẾN THỨC VẬN HÀNH & BÁN HÀNG:\n"
+            "- Chính sách B2B: Chiết khấu sỉ theo MOQ thùng giảm 10%-18%; Đại lý chính thức (Agent VIP) giảm đến 22% kèm hạn mức công nợ gối đầu 30 ngày.\n"
+            "- Công dụng sức khỏe: Yến lọ (bổ phổi, tăng đề kháng, dùng tốt nhất lúc đói); Yến chai (đậm đặc 18%, tái tạo collagen); Nước yến lon (thanh nhiệt giải khát); Cháo yến (gạo ST25 thăng hoa, bữa sáng 3 phút); Cà phê phin giấy (100% Arabica & Robusta Cầu Đất rang mộc).\n"
+            "- Giao hàng: Miễn phí vận chuyển từ 2 thùng, đổi trả 1-1 trong 7 ngày nếu lỗi tem niêm phong.\n\n"
             "QUY TẮC TRẢ LỜI:\n"
             "1. Dựa chính xác vào dữ liệu CSDL ở trên để trả lời câu hỏi của người dùng.\n"
             "2. Trả lời bằng tiếng Việt thân thiện, rõ ràng, gạch đầu dòng các số liệu quan trọng.\n"
             "3. Nếu người dùng hỏi các câu tự nhiên như 'trong kho có gì', 'còn tồn những gì', 'nguyên liệu đủ không', hãy liệt kê rõ ràng số lượng tồn kho từng món.\n"
-            "4. Đưa ra thêm gợi ý ngắn gọn về vận hành sản xuất hoặc bán hàng nếu phù hợp."
+            "4. Đưa ra thêm gợi ý ngắn gọn về vận hành sản xuất hoặc chính sách bán hàng nếu phù hợp."
         )
 
         gemini_text = call_gemini_api(question, system_instruction)
